@@ -139,3 +139,4 @@ If you use Isaac Lab in your research, please cite the technical report:
 
 Isaac Lab development initiated from the [Orbit](https://isaac-orbit.github.io/) framework.
 We gratefully acknowledge the authors of Orbit for their foundational contributions.
+# JaxIsaacLab
