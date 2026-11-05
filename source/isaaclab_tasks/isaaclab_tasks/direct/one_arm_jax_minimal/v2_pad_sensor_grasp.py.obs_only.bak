@@ -1,0 +1,119 @@
+"""v9: v8 with six pad pressure sensors, matching the planned real hand.
+
+The real hand will carry one pressure sensor on the first (proximal) and one
+on the second phalanx of each finger. v8 observed only the three second-link
+contact forces. v9 adds cube contact sensors on the three first links and
+observes, for all six links, a simulated RA12P reading of the force component
+normal to the link's pad; a push on the side of a link does not register, as on
+a pad-mounted sensor.
+
+Each finger joint bends about its link's local z axis and closes toward local
++x (measured on the second links: a pad contact puts the cube's force along
+local -x), so the pad-normal force is -f_x in the link frame.
+
+Sensor model (Marveldex RA12P, "FSR Sensor Data Sheet", Marveldex technical
+specification H201005, p.7): sensing range 5 gf - 4 kgf, resistance infinite
+without load and falling non-linearly with force (curve below, read from the
+data-sheet graph; its conductance trace equals 50 / R[kOhm] at every point),
+read through the data sheet's divider Vout = Vin * Rc / (Ra + Rc). The
+observation is that divider output with Rc = 10 kOhm, quantized to a 10-bit
+ADC. During training each sensor gets an episode-level gain error (data sheet:
+output tolerance max 20%) and per-step noise.
+
+Observation: 40 -> 43 values (pressure 3 -> 6), so v8 checkpoints cannot be
+loaded; v9 trains from scratch. Rewards are unchanged from v8.
+"""
+
+from __future__ import annotations
+
+import torch
+
+from isaaclab.sensors import ContactSensor, ContactSensorCfg
+from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_apply_inverse
+
+from .v2_smooth_grasp import JaxV2SmoothGraspEnv, JaxV2SmoothGraspEnvCfg
+
+
+# RA12P force (gf) -> resistance (kOhm), read from the data-sheet graph (which
+# starts at 55 gf; the 5 gf / 60 kOhm point is an extrapolation).
+_RA12P_FORCE_GF = (5.0, 55.0, 100.0, 165.0, 260.0, 350.0, 470.0, 590.0, 750.0, 975.0, 1290.0, 1585.0,
+                   1920.0, 2465.0, 3240.0, 4000.0)
+_RA12P_RES_KOHM = (60.0, 19.5, 11.5, 8.8, 7.5, 6.8, 5.4, 4.4, 4.0, 3.5, 3.1, 2.9, 2.7, 2.6, 2.55, 2.5)
+
+
+@configclass
+class JaxV2PadSensorGraspEnvCfg(JaxV2SmoothGraspEnvCfg):
+    observation_space = 43
+    proximal_body_names = ("Finger_1_1", "Finger_2_1", "Finger_3_1")
+    sensor_min_force_gf = 5.0
+    sensor_rc_kohm = 10.0
+    sensor_adc_levels = 1023
+    # Training-time sensor randomization (turn off for evaluation).
+    sensor_randomize = True
+    sensor_gain_tolerance = 0.2
+    sensor_noise_std = 0.005
+
+
+class JaxV2PadSensorGraspEnv(JaxV2SmoothGraspEnv):
+    cfg: JaxV2PadSensorGraspEnvCfg
+
+    def __init__(self, cfg: JaxV2PadSensorGraspEnvCfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+        self.proximal_ids = [self.robot.body_names.index(n) for n in cfg.proximal_body_names]
+        self._log_force = torch.log(torch.tensor(_RA12P_FORCE_GF, device=self.device))
+        self._log_res = torch.log(torch.tensor(_RA12P_RES_KOHM, device=self.device))
+        self._sensor_gain = torch.ones((self.num_envs, 6), device=self.device)
+
+    def _reset_idx(self, env_ids: torch.Tensor | None):
+        super()._reset_idx(env_ids)
+        if hasattr(self, "_sensor_gain") and self.cfg.sensor_randomize:
+            ids = self.robot._ALL_INDICES if env_ids is None else env_ids
+            tol = self.cfg.sensor_gain_tolerance
+            self._sensor_gain[ids] = 1.0 + (2.0 * torch.rand((len(ids), 6), device=self.device) - 1.0) * tol
+
+    def sensor_readings(self, pad_force_n: torch.Tensor) -> torch.Tensor:
+        """RA12P divider output in [0, 1] (10-bit) for pad-normal forces in N."""
+        force_gf = pad_force_n * (1000.0 / 9.80665)
+        log_f = torch.log(force_gf.clamp(self.cfg.sensor_min_force_gf, float(_RA12P_FORCE_GF[-1])))
+        k = torch.bucketize(log_f, self._log_force).clamp(1, len(_RA12P_FORCE_GF) - 1)
+        f0, f1 = self._log_force[k - 1], self._log_force[k]
+        r0, r1 = self._log_res[k - 1], self._log_res[k]
+        res = torch.exp(r0 + (r1 - r0) * (log_f - f0) / (f1 - f0))
+        rc = self.cfg.sensor_rc_kohm
+        loaded = force_gf >= self.cfg.sensor_min_force_gf
+        out = (rc / (res + rc)) * loaded
+        if self.cfg.sensor_randomize:
+            # No load means infinite resistance and a zero reading; noise only on loaded sensors.
+            out = (out * self._sensor_gain + self.cfg.sensor_noise_std * torch.randn_like(out)) * loaded
+        levels = self.cfg.sensor_adc_levels
+        return torch.round(out.clamp(0.0, 1.0) * levels) / levels
+
+    def _setup_scene(self):
+        super()._setup_scene()
+        for i, name in enumerate(self.cfg.proximal_body_names, start=1):
+            self.scene.sensors[f"proximal_{i}"] = ContactSensor(ContactSensorCfg(
+                prim_path=f"/World/envs/env_.*/Robot/{name}",
+                filter_prim_paths_expr=["/World/envs/env_.*/Object"],
+                update_period=0.0,
+            ))
+
+    def pad_forces(self) -> torch.Tensor:
+        """Pad-normal cube force (N) on [first links 1-3, second links 1-3]."""
+        names = [f"proximal_{i}" for i in (1, 2, 3)] + [f"finger_{i}" for i in (1, 2, 3)]
+        forces_w = torch.stack([self.scene.sensors[n].data.force_matrix_w[:, 0, 0] for n in names], dim=1)
+        link_ids = self.proximal_ids + list(self.fingertip_ids)
+        link_q = self.robot.data.body_quat_w[:, link_ids].reshape(-1, 4)
+        forces_link = quat_apply_inverse(link_q, forces_w.reshape(-1, 3)).reshape(-1, 6, 3)
+        return (-forces_link[..., 0]).clamp_min(0.0)
+
+    def _get_observations(self):
+        object_b, hand_b, object_vel_b = self._state()
+        q = self.robot.data.joint_pos
+        normalized_q = 2.0 * (q - self.lower) / (self.upper - self.lower).clamp_min(1e-5) - 1.0
+        pressure = self.sensor_readings(self.pad_forces())
+        observation = torch.cat((
+            normalized_q, self.robot.data.joint_vel * 0.2,
+            object_b, object_vel_b, object_b - hand_b, pressure,
+        ), dim=-1)
+        return {"policy": observation.clamp(-5.0, 5.0)}

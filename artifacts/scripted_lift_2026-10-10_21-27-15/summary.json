@@ -1,0 +1,19 @@
+{
+  "video": "/home/jeongwoo/isaacsim/JaxIsaacLab/artifacts/scripted_lift_2026-10-10_21-27-15/scripted_lift.mp4",
+  "steps": 367,
+  "approach_error_m": 0.046088412404060364,
+  "max_force_n": [
+    10.265060424804688,
+    0.0,
+    23.85660743713379
+  ],
+  "force_p95_n": [
+    1.6917231321334834,
+    0.0,
+    1.3958913087844844
+  ],
+  "max_lift_m": 0.002999722957611084,
+  "final_lift_m": -2.980232238769531e-07,
+  "terminated": false,
+  "rl_success": false
+}

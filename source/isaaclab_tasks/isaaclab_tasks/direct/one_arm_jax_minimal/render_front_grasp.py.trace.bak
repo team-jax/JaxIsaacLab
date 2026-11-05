@@ -1,0 +1,300 @@
+"""Record a v10 L-raise policy with gym's RecordVideo from the fixed "front" camera.
+
+Per-joint arm angles, the L-pose errors and the finger-to-cube y error are
+printed every second and saved to front_grasp.json next to the video.
+"""
+import argparse, json, math, os, importlib.metadata
+from isaaclab.app import AppLauncher
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--checkpoint", required=True)
+parser.add_argument("--steps", type=int, default=900)
+parser.add_argument("--num_envs", type=int, default=16)
+parser.add_argument("--camera", choices=("front", "side", "close", "close_front"), default="front")
+parser.add_argument("--tag", default="")
+parser.add_argument("--pregrasp", action="store_true", help="v12 pre-grasp task instead of v11")
+parser.add_argument("--close", action="store_true", help="v13 pre-grasp then close task")
+parser.add_argument("--lift", action="store_true", help="v14 pre-grasp, close, lift task")
+parser.add_argument("--lift_rl", action="store_true", help="v15 policy lift task")
+parser.add_argument("--grasp_lift", action="store_true", help="v16 grasp and lift task")
+parser.add_argument("--intro_s", type=float, default=0.0,
+                    help="first show the arm rising from hanging (all joints 0) to the L start pose over this many s")
+parser.add_argument("--raise_policy", default="",
+                    help="v17 arm-raise checkpoint: start hanging, raise with that policy, then hand over to the "
+                         "episode policy with no state reset (continuous joint motion)")
+parser.add_argument("--raise_max_s", type=float, default=5.0)
+parser.add_argument("--intro_policy", default="",
+                    help="v10 L-raise checkpoint: the raise is driven by that policy, then blended into the start pose")
+AppLauncher.add_app_launcher_args(parser)
+args = parser.parse_args()
+args.enable_cameras = True
+simulation_app = AppLauncher(args).app
+
+import gymnasium as gym
+import torch
+from rsl_rl.runners import OnPolicyRunner
+import isaaclab_tasks  # noqa: F401
+from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
+from isaaclab_tasks.direct.one_arm_jax_minimal.agents.rsl_rl_ppo_cfg import JaxV2FrontGraspPPORunnerCfg
+from isaaclab_tasks.direct.one_arm_jax_minimal.v2_front_grasp import JaxV2FrontGraspEnvCfg
+from isaaclab_tasks.direct.one_arm_jax_minimal.v2_front_pregrasp import JaxV2FrontPregraspEnvCfg
+from isaaclab_tasks.direct.one_arm_jax_minimal.v2_front_grasp_close import JaxV2FrontGraspCloseEnvCfg
+from isaaclab_tasks.direct.one_arm_jax_minimal.v2_front_lift import JaxV2FrontLiftEnvCfg
+from isaaclab_tasks.direct.one_arm_jax_minimal.v2_front_lift_rl import JaxV2FrontLiftRLEnvCfg
+from isaaclab_tasks.direct.one_arm_jax_minimal.v2_front_grasp_lift import JaxV2FrontGraspLiftEnvCfg
+
+checkpoint = os.path.abspath(args.checkpoint)
+if args.grasp_lift:
+    cfg, task, prefix = JaxV2FrontGraspLiftEnvCfg(), "Isaac-JaxV2-FrontGraspLift-Direct-v16", "front_grasp_lift"
+elif args.lift_rl:
+    cfg, task, prefix = JaxV2FrontLiftRLEnvCfg(), "Isaac-JaxV2-FrontLiftRL-Direct-v15", "front_lift_rl"
+elif args.lift:
+    cfg, task, prefix = JaxV2FrontLiftEnvCfg(), "Isaac-JaxV2-FrontLift-Direct-v14", "front_lift"
+elif args.close:
+    cfg, task, prefix = JaxV2FrontGraspCloseEnvCfg(), "Isaac-JaxV2-FrontGraspClose-Direct-v13", "front_close"
+elif args.pregrasp:
+    cfg, task, prefix = JaxV2FrontPregraspEnvCfg(), "Isaac-JaxV2-FrontPregrasp-Direct-v12", "front_pregrasp"
+else:
+    cfg, task, prefix = JaxV2FrontGraspEnvCfg(), "Isaac-JaxV2-FrontGrasp-Direct-v11", "front_grasp"
+cfg.sensor_randomize = False
+cfg.scene.num_envs = args.num_envs
+cfg.episode_length_s = args.steps / 60.0 + 1.0
+cfg.viewer.origin_type = "env"
+cfg.viewer.env_index = 0
+# Wide views: the whole arm, the table and the cube in frame.
+if args.camera == "close":
+    cfg.viewer.eye = (-0.52, 0.52, 0.86)
+    cfg.viewer.lookat = (-0.40, 0.26, 0.78)
+elif args.camera == "close_front":
+    cfg.viewer.eye = (-0.72, 0.24, 0.84)
+    cfg.viewer.lookat = (-0.40, 0.26, 0.78)
+elif args.camera == "front":
+    cfg.viewer.eye = (-1.35, 0.10, 1.35)
+    cfg.viewer.lookat = (-0.30, 0.12, 0.85)
+else:
+    cfg.viewer.eye = (-0.25, 1.75, 1.30)
+    cfg.viewer.lookat = (-0.25, 0.12, 0.85)
+cfg.viewer.resolution = (960, 540)
+raw_env = gym.make(task, cfg=cfg, render_mode="rgb_array")
+video_dir = os.path.join(
+    os.path.dirname(checkpoint), "videos",
+    f"{prefix}_{args.camera}_{os.path.splitext(os.path.basename(checkpoint))[0]}{('_' + args.tag) if args.tag else ''}",
+)
+os.makedirs(video_dir, exist_ok=True)
+video_env = gym.wrappers.RecordVideo(
+    raw_env, video_folder=video_dir, step_trigger=lambda step: step == 0,
+    video_length=args.steps + round(max(args.intro_s, args.raise_max_s if args.raise_policy else 0.0) * 60), disable_logger=True,
+)
+agent_cfg = handle_deprecated_rsl_rl_cfg(JaxV2FrontGraspPPORunnerCfg(), importlib.metadata.version("rsl-rl-lib"))
+env = RslRlVecEnvWrapper(video_env, clip_actions=agent_cfg.clip_actions)
+runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+runner.load(checkpoint)
+policy = runner.get_inference_policy(device=env.unwrapped.device)
+
+u = raw_env.unwrapped
+names = [u.robot.joint_names[i] for i in u.arm_ids[:7]]
+rows = []
+chain = {}
+TRACE = []
+if args.raise_policy:
+    # Continuous chain (user, 2026-10-29): the only state write is the initial
+    # hanging pose (all joints 0, at rest). The v17 raise policy then drives
+    # the arm; when it has settled at the v16 start pose (or at raise_max_s), control passes
+    # to the episode's policies. Joint positions and velocities are never
+    # written again; only the episode clock and action filters restart, as at
+    # a training reset.
+    from isaaclab_tasks.direct.one_arm_jax_minimal.v2_arm_raise import JaxV2ArmRaiseEnvCfg
+    from isaaclab_tasks.direct.one_arm_jax_minimal.v2_front_pregrasp import JaxV2FrontPregraspEnv
+    rc = JaxV2ArmRaiseEnvCfg()
+    sd = torch.load(args.raise_policy, map_location=u.device, weights_only=False)["actor_state_dict"]
+    nl = sum(1 for k in sd if k.startswith("mlp.") and k.endswith(".weight"))
+    def actor(x):
+        x = (x - sd["obs_normalizer._mean"]) / (sd["obs_normalizer._std"] + 1e-2)
+        for i in range(nl):
+            x = x @ sd[f"mlp.{2 * i}.weight"].T + sd[f"mlp.{2 * i}.bias"]
+            if i < nl - 1:
+                x = torch.nn.functional.elu(x)
+        return x
+    arm = list(u.arm_ids); fids = list(u.finger_ids)
+    goal = torch.tensor(rc.start_arm_q, device=u.device)
+    zero_act = torch.zeros(u.num_envs, u.single_action_space.shape[0], device=u.device)
+    with torch.inference_mode():
+        cube0 = u.object.data.root_pos_w.clone()
+        q = u.robot.data.joint_pos.clone(); q[:, arm + fids] = 0.0
+        u.robot.write_joint_state_to_sim(q, torch.zeros_like(q))
+        u.targets[:, arm + fids] = 0.0
+        u.robot.set_joint_position_target(u.targets)
+        hide = u.cfg.pre_hide_scripted_obs
+        u.cfg.pre_hide_scripted_obs = False
+        filt = torch.zeros_like(zero_act); calm = 0; keep_max = torch.zeros(u.num_envs, device=u.device)
+        hand_ids = [u._hand_id] + u.proximal_ids + list(u.fingertip_ids)
+        sens = [f"proximal_{i}" for i in (1, 2, 3)] + [f"finger_{i}" for i in (1, 2, 3)]
+        contact_max = torch.zeros(u.num_envs, device=u.device)
+        n_max = round(args.raise_max_s * 60)
+        for k in range(n_max):
+            obs_r = JaxV2FrontPregraspEnv._get_observations(u)["policy"]
+            filt = rc.action_filter_alpha * actor(obs_r).clamp(-1.0, 1.0) + (1.0 - rc.action_filter_alpha) * filt
+            t = (k + 1) / 60.0
+            def raise_pre(actions, f=filt, t=t):
+                if rc.raise_mode == "residual":
+                    xs = min(t / rc.raise_nominal_s, 1.0)
+                    tg = xs * xs * (3.0 - 2.0 * xs) * goal + rc.raise_residual_rad * math.sin(math.pi * xs) * f[:, :8]
+                else:
+                    tg = goal + rc.raise_range_rad * f[:, :8] if rc.raise_absolute else u.targets[:, arm] + rc.raise_delta_rad * f[:, :8]
+                u.targets[:, arm] = torch.minimum(torch.maximum(tg, u.lower[arm]), u.upper[arm])
+                t0, t1 = rc.raise_thumb_ramp_s
+                x = min(max((t - t0) / (t1 - t0), 0.0), 1.0); w = x * x * (3.0 - 2.0 * x)
+                fg = torch.zeros(u.num_envs, len(fids), device=u.device); fg[:, 2] = w * math.radians(rc.hand_shape_deg[2])
+                u.targets[:, fids] = fg
+            u._pre_physics_step = raise_pre
+            env.step(zero_act)
+            u.episode_length_buf[:] = 0
+            TRACE.append(u.robot.data.joint_pos.clone())
+            p = u.robot.data.body_pos_w[:, hand_ids] - u.scene.env_origins[:, None]
+            x_in = (rc.raise_table_edge_x + rc.raise_edge_margin_m) - p[..., 0]
+            z_in = (rc.table_top_z + rc.raise_clear_m + rc.raise_plate_drop_m) - p[..., 2]
+            keep_max = torch.maximum(keep_max, torch.minimum(x_in, z_in).clamp_min(0.0).amax(dim=1))
+            cn = torch.stack([torch.linalg.vector_norm(u.scene.sensors[n].data.net_forces_w[:, 0], dim=-1) for n in sens], 1).sum(1)
+            contact_max = torch.maximum(contact_max, cn)
+            err = (u.robot.data.joint_pos[:, arm] - goal).abs().amax(dim=1)
+            spd = u.robot.data.joint_vel[:, arm].abs().amax(dim=1)
+            # Hand over once the nominal path has ended and every env is within
+            # 3 deg of the start pose and slower than 0.15 rad/s for 10 steps
+            # (gravity leaves the elbow ~2 deg low, as at a training reset).
+            calm = calm + 1 if (t >= rc.raise_nominal_s and bool(((err < math.radians(3.0)) & (spd < 0.15)).all())) else 0
+            if k % 30 == 29:
+                print("RAISE " + json.dumps({"t": round(t, 2), "q_deg_env0": [round(float(v), 1) for v in torch.rad2deg(u.robot.data.joint_pos[0, arm])],
+                      "err_max_deg_mean": round(float(torch.rad2deg(err).mean()), 2), "speed_max": round(float(spd.max()), 3)}), flush=True)
+            if calm >= 10:
+                break
+        del u._pre_physics_step  # back to the env's own control
+        u.cfg.pre_hide_scripted_obs = hide
+        if hasattr(u, "_filtered_actions"):
+            u._filtered_actions.zero_()
+        u.actions.zero_(); u.previous_actions.zero_()
+        u.episode_length_buf[:] = 0
+        qd = torch.rad2deg(u.robot.data.joint_pos[:, arm]); vd = torch.rad2deg(u.robot.data.joint_vel[:, arm])
+        chain = {"handover_t_s": round(t, 2), "handover_by": "converged" if calm >= 10 else "timeout",
+                 "q_deg_env0": [round(float(v), 2) for v in qd[0]],
+                 "qdot_deg_s_env0": [round(float(v), 2) for v in vd[0]],
+                 "err_to_start_deg_max_all_envs": round(float(torch.rad2deg((u.robot.data.joint_pos[:, arm] - goal).abs()).max()), 2),
+                 "qdot_deg_s_max_all_envs": round(float(vd.abs().max()), 2),
+                 "fingers_deg_env0": [round(float(v), 1) for v in torch.rad2deg(u.robot.data.joint_pos[0, fids])],
+                 "raise_keepout_max_mm": round(float(keep_max.max() * 1000), 1),
+                 "raise_hand_contact_max_n": round(float(contact_max.max()), 3),
+                 "cube_moved_mm": round(float((u.object.data.root_pos_w - cube0).norm(dim=1).max() * 1000), 2)}
+        print("HANDOVER " + json.dumps(chain), flush=True)
+if args.intro_s > 0:
+    # User: the arm starts upright (hanging); show it rising into the L pose
+    # before the episode. Scripted joint targets with a smoothstep ramp; the
+    # episode clock is held at 0 so the episode then runs unchanged.
+    ids = list(u.arm_ids) + list(u.finger_ids)
+    goal = u.robot.data.joint_pos[:, ids].clone()
+    q = u.robot.data.joint_pos.clone(); q[:, ids] = 0.0
+    u.robot.write_joint_state_to_sim(q, torch.zeros_like(q))
+    u.targets[:, ids] = 0.0
+    n_intro = round(args.intro_s * 60)
+    orig_pre = u._pre_physics_step
+    zero_act = torch.zeros(u.num_envs, u.single_action_space.shape[0], device=u.device)
+    if args.intro_policy:
+        # User: use the trained arm-raise (v10 L-raise) checkpoint for the raise.
+        # Its control law (filtered delta targets on the 7 arm joints, fingers
+        # and RotationBody at 0) and its unmasked v9 observation are reproduced
+        # here; afterwards the targets blend into the start pose over 1.5 s.
+        from isaaclab_tasks.direct.one_arm_jax_minimal.v2_l_raise import JaxV2LRaiseEnvCfg
+        from isaaclab_tasks.direct.one_arm_jax_minimal.v2_pad_sensor_grasp import JaxV2PadSensorGraspEnv
+        lc = JaxV2LRaiseEnvCfg()
+        sd = torch.load(args.intro_policy, map_location=u.device, weights_only=False)["actor_state_dict"]
+        arm7 = list(u.arm_ids[:7]); filt = torch.zeros_like(zero_act)
+        def actor(x):
+            x = (x - sd["obs_normalizer._mean"]) / (sd["obs_normalizer._std"] + 1e-2)
+            x = torch.nn.functional.elu(x @ sd["mlp.0.weight"].T + sd["mlp.0.bias"])
+            x = torch.nn.functional.elu(x @ sd["mlp.2.weight"].T + sd["mlp.2.bias"])
+            return x @ sd["mlp.4.weight"].T + sd["mlp.4.bias"]
+        n_raise = n_intro - 90
+        with torch.inference_mode():
+            for k in range(n_raise):
+                a = actor(JaxV2PadSensorGraspEnv._get_observations(u)["policy"])
+                filt = lc.action_filter_alpha * a.clamp(-1.0, 1.0) + (1.0 - lc.action_filter_alpha) * filt
+                def intro_pre(actions, f=filt):
+                    t = u.targets[:, arm7] + lc.arm_delta_scale * f[:, :7]
+                    t = torch.minimum(torch.maximum(t, u.lower[arm7]), u.upper[arm7])
+                    t[:, 0] = t[:, 0].clamp_min(lc.l_min_shoulder_pitch_rad)
+                    t[:, 2] = t[:, 2].clamp(*lc.l_shoulder_yaw_range_rad)
+                    t[:, 3] = t[:, 3].clamp(*lc.l_elbow_range_rad)
+                    u.targets[:, arm7] = t
+                u._pre_physics_step = intro_pre
+                env.step(zero_act)
+                u.episode_length_buf[:] = 0
+            print("INTRO_RAISED_DEG", [round(float(v), 1) for v in torch.rad2deg(u.robot.data.joint_pos[0, ids])], flush=True)
+            start = u.targets[:, ids].clone()
+            for k in range(90):
+                x = (k + 1) / 90.0; w = x * x * (3.0 - 2.0 * x)
+                def intro_pre(actions, w=w):
+                    u.targets[:, ids] = start + w * (goal - start)
+                u._pre_physics_step = intro_pre
+                env.step(zero_act)
+                u.episode_length_buf[:] = 0
+    else:
+      with torch.inference_mode():
+        for k in range(n_intro):
+            x = min(1.0, (k + 1) / (0.85 * n_intro)); w = x * x * (3.0 - 2.0 * x)
+            def intro_pre(actions, w=w):
+                u.targets[:, ids] = w * goal
+            u._pre_physics_step = intro_pre
+            env.step(zero_act)
+            u.episode_length_buf[:] = 0
+    u._pre_physics_step = orig_pre
+    # Snap to the exact reset pose at rest (the ramp ends within ~1 deg) so the
+    # frozen pre-grasp starts from the same state as in training; wr03/02/01
+    # renders without this drifted to another pre-grasp (forearm roll +7 vs -14).
+    with torch.inference_mode():
+        q = u.robot.data.joint_pos.clone(); q[:, ids] = goal
+        u.robot.write_joint_state_to_sim(q, torch.zeros_like(q))
+        u.targets[:, ids] = goal
+        u.episode_length_buf[:] = 0
+    if hasattr(u, "_filtered_actions"):
+        u._filtered_actions.zero_()
+obs = env.get_observations()
+with torch.inference_mode():
+    for step in range(args.steps):
+        obs, _, _, _ = env.step(policy(obs))
+        TRACE.append(u.robot.data.joint_pos.clone())
+        if args.raise_policy:
+            tf = getattr(u, "_table_force", None)
+            if tf is not None:
+                chain["episode_table_force_max_n"] = max(chain.get("episode_table_force_max_n", 0.0), round(float(tf.max()), 2))
+                chain.setdefault("_tf_sum", 0.0); chain["_tf_sum"] += float(tf.mean())
+        if step % 60 == 59:
+            q = torch.rad2deg(u.robot.data.joint_pos[:, u.arm_ids[:7]])
+            hand = u.robot.data.body_pos_w[:, u._hand_id]
+            d = u.robot.data.body_pos_w[:, u.fingertip_ids[:2]].mean(dim=1) - hand
+            d = d / torch.linalg.vector_norm(d, dim=1, keepdim=True)
+            row = {"t": round((step + 1) / 60, 1),
+                   "q_deg_env0": {n: round(float(v), 1) for n, v in zip(names, q[0])},
+                   "hand_dir_env0": [round(float(v), 2) for v in d[0]],
+                   "cube_rise_mm": [round(1000 * float(v), 1) for v in u._cube_rise],
+                   "pad_N_env0": [round(float(v), 2) for v in u.pad_forces()[0]],
+                   "fingers_deg_env0": [round(float(v), 1) for v in torch.rad2deg(u.robot.data.joint_pos[0, u.finger_ids])]}
+            rows.append(row)
+            print("FGRASP " + json.dumps(row), flush=True)
+if args.raise_policy:
+    chain["episode_table_force_mean_n"] = round(chain.pop("_tf_sum", 0.0) / args.steps, 3)
+    rise = u._cube_rise
+    chain["cube_rise_mm_at_end"] = [round(float(v) * 1000, 1) for v in rise]
+    chain["lifted_4cm_frac"] = round(float((rise > 0.04).float().mean()), 3)
+    q = torch.stack(TRACE)  # (T, N, J)
+    dq = torch.rad2deg((q[1:] - q[:-1]).abs())  # deg per step
+    per_step = dq.amax(dim=2).amax(dim=1)
+    top = torch.topk(per_step, 8)
+    chain["max_joint_step_deg"] = [[int(i) + 1, round((int(i) + 1) / 60, 2), round(float(v), 2),
+                                    u.robot.joint_names[int(dq[i].amax(dim=0).argmax())]] for v, i in zip(top.values, top.indices)]
+    n_raise = round(chain.get("handover_t_s", 0) * 60)
+    chain["handover_step"] = n_raise
+    chain["max_joint_step_deg_around_handover"] = [round(float(per_step[k]), 2) for k in range(max(n_raise - 4, 0), min(n_raise + 6, len(per_step)))]
+    print("CHAIN " + json.dumps(chain), flush=True)
+    json.dump(chain, open(os.path.join(video_dir, "chain.json"), "w"))
+json.dump(rows, open(os.path.join(video_dir, "front_grasp.json"), "w"))
+print("FRONT_GRASP_DIR=" + video_dir, flush=True)
+env.close()
+simulation_app.close()

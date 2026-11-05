@@ -1,0 +1,194 @@
+"""v15: v14 with the lift done by the policy alone, keeping the cube on a vertical line.
+
+Up to ``lift_after_s`` the episode is v14/v13 (frozen pre-grasp actor, 4 cm
+pull-back, scripted close). From then on there is no IK lift: the arm target is
+the held target plus ``lift_arm_range_rad`` x the policy action (latched so it
+does not jump at the switch). User (2026-10-25): the cube may only move along z.
+Its x/y displacement and rotation from its pose at lift onset, and its
+angular speed, are penalized; v14's rise, hold and drop terms stay, plus a hand
+rise term while held so the arm gets a signal before the cube moves.
+"""
+
+from __future__ import annotations
+
+import math
+
+import torch
+
+from isaaclab.utils import configclass
+
+from .v2_front_grasp_close import JaxV2FrontGraspCloseEnv
+from .v2_front_lift import JaxV2FrontLiftEnv, JaxV2FrontLiftEnvCfg
+from .v2_pad_sensor_grasp import JaxV2PadSensorGraspEnv
+
+
+@configclass
+class JaxV2FrontLiftRLEnvCfg(JaxV2FrontLiftEnvCfg):
+    lift_arm_range_rad = 0.5
+    lift_hand_scale = 1.0
+    # v15_lift_rl model_2098 (policy only, 0.5 rad): hand went 2.4 cm down,
+    # cube rise 7 mm, success 2%. Narrower arm range, and hand drop below its
+    # lift onset height is penalized per m. User: the lift is the policy's alone (no IK).
+    # model_1849 arm action std was 0.02-0.05 (0.3 deg of exploration at
+    # 0.25 rad); v15_rl_only resumes from a copy with arm std reset to 0.3.
+    lift_arm_range_rad = 0.25
+    lift_hand_drop_scale = 20.0
+    # Cube pose change from lift onset: per m of x/y, per rad of rotation,
+    # per (rad/s)^2 of angular speed.
+    lift_xy_scale = 30.0
+    lift_rot_scale = 3.0
+    lift_angvel_scale = 0.05
+    # armstd2 model_2347: rotation 20 -> 12 deg and x/y 18 -> 8 mm, but by
+    # not lifting (success 2.2% -> 0.3%, cube rise ~6 mm). Pay rise more and
+    # add a bonus for a clean lift: cube up more than lift_clean_rise_m with
+    # rotation and x/y within the limits below.
+    lift_scale = 0.0
+    lift_clean_rise_m = 0.04
+    lift_clean_rot_deg = 15.0
+    lift_clean_xy_m = 0.015
+    lift_clean_scale = 3.0
+    # clean model_2596: rotation 8 deg, x/y 5 mm, but no lift (clean 0%,
+    # hand +4 mm): random offsets on all 7 joints tilt the cube long before
+    # they add up to a straight lift. The IK lift probe raised the hand with
+    # shoulder pitch, elbow and wrist pitch; the policy now drives only these
+    # arm_ids in the lift phase (others hold).
+    lift_active_joints = (0, 3, 5)
+    # 3joint model_2845: still no lift (hand +1 mm). With absolute offsets
+    # latched at lift onset only the change of the action since onset moved
+    # the arm, so a steady lift needed an ever-growing action. The lift-phase
+    # action is now a joint velocity (rad/s at action 1) on the active joints.
+    lift_rate_rad_s = 0.3
+    lift_arm_range_rad = 0.6
+    # rate model_3094: first policy lifts (hand +5.5 cm, cube +3.7 cm, success
+    # 11-17%) but fast and tumbling (rotation 25-33 deg, x/y 20 mm; env 0
+    # flung the cube 20 cm up). Slower joint rate, smaller range, rotation
+    # costs double.
+    lift_rate_rad_s = 0.15
+    lift_arm_range_rad = 0.4
+    lift_rot_scale = 6.0
+    # rate_slow model_3343: lifting faded again as the rotation penalty
+    # doubled (success 9.9 -> 4.2%, rise 2.2 -> 1.3 cm): any lift tilts the
+    # cube a bit, so not lifting paid more. The cube-rise reward is now scaled
+    # by lift quality exp(-rot / lift_quality_rot_rad) * exp(-xy /
+    # lift_quality_xy_m) (v14's ungated rise term off), and the raw rotation
+    # penalty goes back to 3.
+    lift_rot_scale = 3.0
+    lift_gated_scale = 5.0
+    lift_quality_rot_rad = 0.2
+    lift_quality_xy_m = 0.02
+    # 4 cm cube, cube4 / cube4_c2 (500 iterations from the v12 pre-grasp):
+    # the hand never rose (-1.4 mm) with the slow rate and only the
+    # quality-gated rise reward; active-joint std fell to 0.14-0.20. Use the
+    # settings under which the 5 cm policy first lifted (rate model_3094):
+    # 0.3 rad/s, 0.6 rad range, ungated rise reward 5 (gated term kept).
+    lift_rate_rad_s = 0.3
+    lift_arm_range_rad = 0.6
+    lift_scale = 5.0
+    # cube4_rate model_2291: hand +2.2 cm but cube +3.5 mm; the policy lifted
+    # by turning the wrist pitch (28 -> 7 deg), tilting the hand out of the
+    # grasp. Penalize hand rotation from its lift-onset orientation (per rad)
+    # and hand rise beyond the cube's rise (slip, per m).
+    lift_hand_rot_scale = 2.0
+    lift_slip_scale = 20.0
+    # level2 model_2789: slip 21 -> 0.4 mm and hand rotation 3.7 deg, but by
+    # lifting less again (hand rise 1.4 -> 0.5 cm, success 12.5 -> 6.8%).
+    # From lift_deadline_s on, a cube still below lift_target_m costs
+    # lift_deadline_scale x the missing fraction every step.
+    lift_deadline_s = 10.0
+    lift_deadline_scale = 2.0
+    # deadline model_2849: success 66.5%, cube +7 cm, slip 0.5 mm, but the
+    # cube travels 61 mm in x/y (shoulder pitch -13 deg swings the hand
+    # back) and the hand tilts 13 deg. Double the x/y and hand-rotation costs.
+    lift_xy_scale = 60.0
+    lift_hand_rot_scale = 4.0
+
+
+class JaxV2FrontLiftRLEnv(JaxV2FrontLiftEnv):
+    cfg: JaxV2FrontLiftRLEnvCfg
+
+    def _lifting(self) -> torch.Tensor:
+        return self.episode_length_buf * self.step_dt >= self.cfg.lift_after_s
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+        JaxV2FrontGraspCloseEnv._pre_physics_step(self, actions)
+        arm = self.arm_ids[:7]
+        lifting = self._lifting()
+        if not hasattr(self, "_lift_hold"):
+            self._lift_hold = self.targets[:, arm].clone()
+            self._lift_offset = torch.zeros((self.num_envs, 7), device=self.device)
+        mask = torch.zeros(7, device=self.device)
+        mask[list(self.cfg.lift_active_joints)] = 1.0
+        # Rate control: the lift-phase action is a joint velocity command on
+        # the active joints, integrated into an offset from the held target
+        # (within +/- lift_arm_range_rad).
+        self._lift_hold = torch.where(lifting[:, None], self._lift_hold, self.targets[:, arm])
+        self._lift_offset = torch.where(
+            lifting[:, None],
+            (self._lift_offset + self.cfg.lift_rate_rad_s * self.step_dt * self.actions[:, :7] * mask).clamp(
+                -self.cfg.lift_arm_range_rad, self.cfg.lift_arm_range_rad
+            ),
+            0.0,
+        )
+        target = self._lift_hold + self._lift_offset
+        target = torch.minimum(torch.maximum(target, self.lower[arm]), self.upper[arm])
+        self.targets[:, arm] = torch.where(lifting[:, None], target, self.targets[:, arm])
+        squeeze = self.targets.new_tensor([math.radians(v) for v in self.cfg.lift_squeeze_deg])
+        fingers = self.targets[:, self.finger_ids] + squeeze * lifting[:, None]
+        self.targets[:, self.finger_ids] = torch.minimum(
+            torch.maximum(fingers, self.lower[self.finger_ids]), self.upper[self.finger_ids]
+        )
+
+    def _get_rewards(self):
+        reward = super()._get_rewards()
+        log = self.extras["log"]
+        lifting = self._lifting()
+        pos = self.object.data.root_pos_w
+        quat = self.object.data.root_quat_w
+        hand_z = self.robot.data.body_pos_w[:, self._hand_id, 2]
+        if not hasattr(self, "_lift_p0"):
+            self._lift_p0 = pos.clone()
+            self._lift_q0 = quat.clone()
+            self._lift_hand_z0 = hand_z.clone()
+        self._lift_p0 = torch.where(lifting[:, None], self._lift_p0, pos)
+        self._lift_q0 = torch.where(lifting[:, None], self._lift_q0, quat)
+        self._lift_hand_z0 = torch.where(lifting, self._lift_hand_z0, hand_z)
+        hand_q = self.robot.data.body_quat_w[:, self._hand_id]
+        if not hasattr(self, "_lift_hand_q0"):
+            self._lift_hand_q0 = hand_q.clone()
+        self._lift_hand_q0 = torch.where(lifting[:, None], self._lift_hand_q0, hand_q)
+        hand_rot = 2.0 * torch.acos((hand_q * self._lift_hand_q0).sum(dim=1).abs().clamp(max=1.0))
+        slip = ((hand_z - self._lift_hand_z0) - self._cube_rise).clamp_min(0.0)
+        xy = torch.linalg.vector_norm((pos - self._lift_p0)[:, :2], dim=1)
+        rot = 2.0 * torch.acos((quat * self._lift_q0).sum(dim=1).abs().clamp(max=1.0))
+        angvel = self.object.data.root_ang_vel_w.square().sum(dim=1)
+        distal = JaxV2PadSensorGraspEnv.pad_forces(self)[:, 3:] >= self.cfg.grasp_distal_force_n
+        both = distal[:, 2] & distal[:, :2].any(dim=1)
+        hand_rise = ((hand_z - self._lift_hand_z0) / self.cfg.lift_target_m).clamp(0.0, 1.0)
+        terms = (
+            self.cfg.lift_hand_scale * hand_rise * both.float()
+            - self.cfg.lift_xy_scale * xy
+            - self.cfg.lift_rot_scale * rot
+            - self.cfg.lift_angvel_scale * angvel
+            - self.cfg.lift_hand_drop_scale * (self._lift_hand_z0 - hand_z).clamp_min(0.0)
+            - self.cfg.lift_hand_rot_scale * hand_rot
+            - self.cfg.lift_slip_scale * slip
+        )
+        late = (self.episode_length_buf * self.step_dt >= self.cfg.lift_deadline_s).float()
+        terms = terms - self.cfg.lift_deadline_scale * late * (1.0 - (self._cube_rise / self.cfg.lift_target_m).clamp(0.0, 1.0))
+        clean = (
+            both & (self._cube_rise > self.cfg.lift_clean_rise_m)
+            & (rot < math.radians(self.cfg.lift_clean_rot_deg)) & (xy < self.cfg.lift_clean_xy_m)
+        )
+        terms = terms + self.cfg.lift_clean_scale * clean.float()
+        quality = torch.exp(-rot / self.cfg.lift_quality_rot_rad) * torch.exp(-xy / self.cfg.lift_quality_xy_m)
+        progress = (self._cube_rise / self.cfg.lift_target_m).clamp(0.0, 1.0)
+        terms = terms + self.cfg.lift_gated_scale * progress * quality * both.float()
+        reward = reward + lifting.float() * terms
+        n = lifting.float().sum().clamp_min(1.0)
+        log["lift_hand_rot_deg"] = torch.rad2deg((hand_rot * lifting).sum() / n)
+        log["lift_slip_mm"] = 1000.0 * (slip * lifting).sum() / n
+        log["lift_clean"] = (clean & lifting).float().sum() / n
+        log["lift_xy_mm"] = 1000.0 * (xy * lifting).sum() / n
+        log["lift_rot_deg"] = torch.rad2deg((rot * lifting).sum() / n)
+        log["lift_hand_rise_m"] = ((hand_z - self._lift_hand_z0) * lifting).sum() / n
+        return reward

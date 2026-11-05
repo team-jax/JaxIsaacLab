@@ -1,0 +1,48 @@
+{
+  "status": "FAILED_PHYSICAL_GATE_NO_TRAINING",
+  "video": "logs/rsl_rl/one_arm_jax_stage1/manual_validation_2026-10-12/videos/manual_grasp_gate_h264.mp4",
+  "scene": {
+    "table_top_z_m": 0.74,
+    "object_center_m": [-0.22, 0.08, 0.7825],
+    "object_size_m": [0.08, 0.08, 0.085],
+    "policy_step_s": 0.016666666666666666,
+    "required_hold_steps": 30
+  },
+  "manual_probes": [
+    {
+      "name": "current_joint_targets_16_parallel",
+      "arm_variants": 16,
+      "max_raw_three_finger_contact_steps": 6,
+      "max_valid_side_contact_steps": 0,
+      "max_force_n": 149.03,
+      "successes": 0
+    },
+    {
+      "name": "urdf_collision_fit_80mm_16_parallel",
+      "arm_variants": 16,
+      "max_raw_three_finger_contact_steps": 15,
+      "max_valid_side_contact_steps": 3,
+      "successes": 0
+    },
+    {
+      "name": "urdf_fit_grip_fraction_16_parallel",
+      "grip_fraction_range": [0.3, 1.0],
+      "max_consecutive_raw_contact_steps": 44,
+      "max_consecutive_valid_side_contact_steps": 3,
+      "successes": 0
+    },
+    {
+      "name": "finger_2_proximal_distal_scan_16_parallel",
+      "max_consecutive_raw_contact_steps": 60,
+      "max_consecutive_valid_side_contact_steps": 5,
+      "successes": 0
+    },
+    {
+      "name": "48mm_object_urdf_fit_16_parallel",
+      "max_consecutive_raw_contact_steps": 0,
+      "successes": 0
+    }
+  ],
+  "diagnosis": "Original arm/finger action moves distal links above/away from the object. URDF fitted pose initially penetrates the object, generating >100 N; finger 2 contact migrates toward the upper region. Neither pose is a validated reset curriculum pre-grasp. A 0.5 s valid grasp was not reproduced.",
+  "training_started": false
+}

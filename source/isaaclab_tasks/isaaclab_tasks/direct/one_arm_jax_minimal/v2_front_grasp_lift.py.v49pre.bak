@@ -1,0 +1,682 @@
+"""v16: v15 with the grasp and the lift learned together.
+
+User (2026-10-28): train the grasp and the lift as one stage. The v12
+pre-grasp (frozen actor) runs to ``close_after_s``; from then on the balanced
+close (v13) closes the first joints while the policy drives the v15 lift
+joints at once, so it can raise the hand off the table (finger 2's plate was
+pressed onto it, bending its distal joint) while it squeezes. Action 7 sets the
+squeeze force. More pad links on the cube is paid, finger/table force costs,
+and the cube's x/y and rotation are measured from its spawn pose (it may move
+only along z).
+"""
+
+from __future__ import annotations
+
+import math
+import os
+
+import torch
+
+import isaaclab.sim as sim_utils
+from isaaclab.assets import RigidObject, RigidObjectCfg
+from isaaclab.utils import configclass
+
+from .v2_front_lift_rl import JaxV2FrontLiftRLEnv, JaxV2FrontLiftRLEnvCfg
+from .v2_pad_sensor_grasp import JaxV2PadSensorGraspEnv
+
+
+@configclass
+class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
+    lift_after_s = 5.0
+    lift_deadline_s = 10.0
+    lift_squeeze_deg = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    close_squeeze_range_n = 1.5
+    lift_ref_spawn = True
+    lift_quality_xy_m = 0.01
+    # Per pad link (first and second links of fingers 1/2 and thumb) pressing
+    # the cube with at least close_touch_n.
+    gl_contact_scale = 0.5
+    # Per N of finger 1/2 force on anything but the cube (the table).
+    gl_table_force_scale = 0.3
+    # Tilt-cost, tilt-gate, wrist-coupling and squeeze runs from model_498 all
+    # did worse (.tilt/.gate/.pitch/.pitch2/.squeeze.bak). slip_probe: with a
+    # level hand the pads alone hold the cube and it slips, because the thumb
+    # presses with its first link (1.1-1.7 N vs 0.5-0.8 N distal) off-axis
+    # from fingers 1/2. The tilted hand cradles it. Back to model_498's
+    # settings; the policy now also sets the thumb first-joint close limit
+    # (0 +/- 30 deg) to find an opposing thumb pad.
+    # thumb model_747: the thumb limit action went unused (thumb first joint
+    # -30.5 deg, already touching), result as tilt (x/y 11 mm, tilt 16 deg).
+    # thumb2_scan (thumb second 0-105 deg) and slip_probe with cube friction 3:
+    # level lifts all "slipped" alike; the slip metric was wrong (hand base vs
+    # fingertips), not the grip. Coupled level lift again (pitch2 settings)
+    # with hand rise and slip measured at the pads.
+    close_thumb_max_range_deg = 0.0
+    # User (2026-10-28): write a better reward. The close/lift-phase reward
+    # was the v12+v13+v14+v15 stack (~40 terms; penalty tweaks on top of it
+    # either did nothing or broke the lift). gl_reward replaces it after
+    # close onset with one compact reward (before it: 0, the frozen pre-grasp
+    # acts there). The cube height is paid only while held, scaled by how
+    # little the cube moved in x/y from its spawn point and rotated, so a
+    # straight z lift pays most; settings as model_498 (no coupling,
+    # shoulder pitch / elbow / wrist pitch, squeeze 2 +/- 1.5 N).
+    gl_reward = True
+    gl_hold_scale = 1.0          # thumb + finger 1 or 2 distal pads on the cube
+    gl_hold3_scale = 1.0         # all three distal pads
+    gl_contact_scale = 0.2       # per pad link (6) on the cube
+    gl_rise_scale = 4.0          # held x height progress x quality
+    gl_target_scale = 4.0        # held x closeness to lift_target_m x quality
+    gl_target_m = 0.01
+    gl_xy_m = 0.01               # quality = exp(-xy / gl_xy_m) * exp(-rot / gl_rot_rad)
+    gl_rot_rad = 0.2
+    gl_xy_cost = 50.0            # per m of x/y from spawn
+    gl_rot_cost = 2.0            # per rad of cube rotation
+    gl_angvel_cost = 0.05        # per (rad/s)^2
+    gl_hand_rot_cost = 1.0       # per rad of hand rotation since close onset
+    gl_over_cost = 30.0          # per m above lift_target_m
+    gl_late_s = 9.0              # from here, missing height costs gl_late_cost x missing fraction
+    gl_late_cost = 2.0
+    gl_rate_cost = 0.05          # arm action rate
+    gl_table_force_scale = 0.3
+    gl_xy_vel_cost = 0.0         # per m/s of cube x/y speed
+    gl_rise_gated = True         # height progress x quality (False: ungated)
+    gl_straight_scale = 0.0      # held x quality x height progress
+    # rw model_249: lifted 87%, all three distal pads 92%, hand tilt 9.5 deg,
+    # but x/y 18 mm (straight 6%): the cube reaches +58 mm within 1 s of
+    # close onset with the elbow pinned at its range end (+18 deg), so the
+    # hand follows the elbow arc. Wider range, so the shoulder/elbow mix that
+    # keeps x/y is reachable.
+    lift_arm_range_rad = 0.6
+    # rw_c2 model_498: overshot (9.5 cm, x/y 26 mm) and then stopped lifting
+    # (lifted 86% -> 0%): with the height reward fully gated by quality, a
+    # sloppy lift paid ~0.4 while its x/y cost was ~1.3, so not lifting won.
+    # Height progress is now paid ungated (plus a quality-gated straight
+    # bonus), missing height costs more from 8 s, overshoot costs 2x, and the
+    # range is 0.5 rad. Restart from rw model_249.
+    gl_rise_gated = False
+    gl_straight_scale = 4.0
+    gl_late_s = 8.0
+    gl_late_cost = 4.0
+    gl_over_cost = 60.0
+    lift_arm_range_rad = 0.5
+    # rw_bal model_498: lifts held (86%, 8.9 cm, all distal 88%) but x/y grew
+    # to 32 mm: the elbow does the lift (+27 deg, at its range end), the wrist
+    # levels the hand (32 -> 12 deg), the shoulder barely moves, so the hand
+    # follows the elbow arc. The x/y displacement cost only says the total is
+    # bad; add a per-step cost on cube x/y speed so each arc step is charged
+    # as it happens, double the displacement cost, and halve the joint rate.
+    gl_xy_vel_cost = 20.0
+    gl_xy_cost = 100.0
+    lift_rate_rad_s = 0.15
+    # xyv / xyv2 model_996: x/y 32 -> 10-13 mm, lifted 82%, but the policy
+    # moved the lift to the wrist pitch (elbow back to 55, wrist 33 -> 48 deg)
+    # and the hand tilt grew 8 -> 14 deg. Hand tilt costs 4x.
+    gl_hand_rot_cost = 4.0
+    # rw_tilt model_1245: x/y 4 mm (best yet), lifted 82%, but the lift is
+    # now the wrist pitch alone (32 -> 57 deg, elbow 55 -> 49): hand tilt 17
+    # deg and cube rotation 12 deg even at 4x tilt cost. Keep the hand pitch
+    # with the wrist coupling (allowed by the user) so the policy lifts with
+    # shoulder pitch and elbow only. The coupled runs before used the old
+    # reward with its hand-base slip term, which misread a held cube as
+    # slipping (slip_probe); this reward has no slip term.
+    lift_keep_hand_pitch = True
+    lift_active_joints = (0, 3)
+    # rw_couple (from the wrist-lifting model_1245): no lift at all (rise
+    # 5 mm) and the hand pressed the table (9.8 N); its only lift skill, the
+    # wrist, was taken away. Train the coupled action space from scratch.
+    # rw_couple_fresh model_249: no lift either (rise 2 mm, table force 5-8
+    # N, finger 2 distal bent -19 deg): with the hand pitch locked, random
+    # shoulder/elbow motion never raised the pads off the table. Coupling
+    # off again; continue rw_tilt model_1245 (x/y 4 mm) and charge the cube
+    # rotation itself (the user's criterion) 4x, with a tighter quality.
+    lift_keep_hand_pitch = False
+    lift_active_joints = (0, 3, 5)
+    gl_rot_cost = 8.0
+    gl_rot_rad = 0.1
+    # User (2026-10-28, model_1494): small needless shaking. jitter_probe
+    # (64 envs, step-to-step joint velocity change): fingers 5-17 deg/s while
+    # held, from contact chatter of the stiff finger drives (kp 180 on 11 g
+    # links). Finger kp 40 / kd 2: held-phase shake arm 0.1-1.0 (was 0.2-2.7)
+    # and fingers 1.4-9 deg/s, and model_1494 unchanged lifts 100%, x/y 3.1 mm,
+    # rotation 14 deg. Pad force EMA and a finger torque limit did nothing;
+    # finger armature calmed finger 2 but shook the frozen pre-grasp arm.
+    _rc = JaxV2FrontLiftRLEnvCfg().robot_cfg
+    robot_cfg = _rc.replace(actuators={**_rc.actuators, "fingers": _rc.actuators["fingers"].replace(stiffness=40.0, damping=2.0)})
+    # User: no abrupt motion. Chain jitter probe (64 envs): finger 2's distal
+    # joint chattered after the handover (111 deg/s velocity change per step);
+    # finger armature 2e-4 removes it (every phase <= 38 deg/s per step) and
+    # all 64 envs still lift. (5e-4: 97%; target 1.5 deg off the limit: 72%.)
+    robot_cfg = _rc.replace(actuators={**_rc.actuators, "fingers": _rc.actuators["fingers"].replace(
+        stiffness=40.0, damping=2.0, armature=2e-4)})
+    if os.environ.get("GL_FINGER_ARMATURE"):
+        robot_cfg = _rc.replace(actuators={**_rc.actuators, "fingers": _rc.actuators["fingers"].replace(
+            stiffness=40.0, damping=2.0, armature=float(os.environ["GL_FINGER_ARMATURE"]))})
+    # User: the arm looks twisted. rot probe (model_1494): the hand pitches up
+    # 21 deg about world y (wrist pitch +27, elbow -7 deg), the cube 14 deg;
+    # no roll or yaw. Coupling or a tight wrist range from the start never
+    # learned to lift, so the wrist range is narrowed in steps from model_1494
+    # (GL_WRIST_RANGE, rad), moving the lift to shoulder pitch and elbow.
+    if os.environ.get("GL_WRIST_RANGE"):
+        lift_joint_range_rad = (0.5, 0.5, 0.5, 0.5, 0.5, float(os.environ["GL_WRIST_RANGE"]), 0.5)
+    # wrist curriculum (wr04 -> wr01): hand tilt 15 -> 10 deg, cube rotation
+    # 10 -> 7 deg, lifted 84 -> 80%, but x/y 4.5 -> 12.6 mm. GL_XY_VEL raises
+    # the cube x/y speed cost (the term that brought x/y down before).
+    if os.environ.get("GL_XY_VEL"):
+        gl_xy_vel_cost = float(os.environ["GL_XY_VEL"])
+    # sm2 model_2241 (on the smoothed pre-grasp model_4283): lifted 68% but the
+    # cube went to 11.7 cm on average (target 8), rotation 17 deg, hand tilt
+    # 20 deg. Overshoot costs 200/m (was 60).
+    gl_over_cost = 200.0
+    # sm3: at 200/m lifting collapsed (82% at 2366 -> 4% at 2490). 100/m,
+    # continued from sm3 model_2350 on the noise-robust pre-grasp (model_4532).
+    gl_over_cost = 100.0
+    # User (2026-10-29): after the lift the arm keeps swinging. Chain trace
+    # (v18 + sm3 model_2350): the elbow hunts around the target height,
+    # 74 -> 87 -> 77 -> 83 -> 75 deg on a ~2.5 s period at up to 15 deg/s;
+    # nothing paid for arm speed (the rate cost only sees action changes).
+    # Arm joint speed cost per (rad/s)^2 (7 joints) and a still bonus for
+    # holding at the target height with the arm slower than gl_still_speed.
+    gl_arm_vel_cost = 0.0
+    gl_still_scale = 0.0
+    gl_still_speed = 0.05        # rad/s, fastest arm joint
+    if os.environ.get("GL_ARM_VEL"):
+        gl_arm_vel_cost = float(os.environ["GL_ARM_VEL"])
+    if os.environ.get("GL_STILL"):
+        gl_still_scale = float(os.environ["GL_STILL"])
+    # still2 (cost on every closing step, from sm3 model_2350): lifting
+    # collapsed 76% -> 4% in 200 iterations (not lifting avoided the cost).
+    # The speed cost now applies only while the cube is held above
+    # gl_arm_vel_from of the target height, so closing and lifting are free.
+    gl_arm_vel_from = 0.6
+    # sm3 itself collapsed after 2366 under the 100/m overshoot cost (rise
+    # 11 cm -> 2 cm, lifted 82 -> 9%), and both hold runs from model_2350 did
+    # the same; GL_OVER sets the overshoot cost for the hold run.
+    if os.environ.get("GL_OVER"):
+        gl_over_cost = float(os.environ["GL_OVER"])
+    # User (2026-11-01): right after the v23 raise hands over, finger 2's tip hits
+    # the table (4.8 N, all envs) and the hand bounces: the policy lowers the arm
+    # ~1-2 mm before closing, tolerated at 0.3/N. Also the per-step reward (~15,
+    # values ~1500) is too large for the clipped value loss (the cause of the
+    # late-training collapses found in v21/v22). GL_REWARD_SCALE scales the sum,
+    # GL_TABLE sets the finger-table cost per N.
+    gl_reward_scale = 1.0
+    if os.environ.get("GL_REWARD_SCALE"):
+        gl_reward_scale = float(os.environ["GL_REWARD_SCALE"])
+    if os.environ.get("GL_TABLE"):
+        gl_table_force_scale = float(os.environ["GL_TABLE"])
+    # User (2026-11-01): train with the cube anywhere in a box on the table. Episodes then
+    # start at the close, already in the pre-grasp pose for that cube (the v23/v25 raise's
+    # end pose shifted by data/v25_shift_xyz.pt, last knot), as the chain hands over, so
+    # the frozen v12 pre-grasp (trained for one cube spot) is not used. GL_CUBE_RANGE (m)
+    # sets the +/- range in x and y.
+    gl_pregrasp_start = False
+    gl_cube_dx_m = 0.0
+    gl_cube_dy_m = 0.0
+    gl_pregrasp_q_deg = (-7.3, 0.0, 2.5, 73.7, -5.6, 14.7, -6.6, -170.1)
+    gl_sag_comp_deg = (1.9, 0.0, 0.0, 2.1, 0.0, 0.7, -0.2, 0.0)
+    gl_shift_path = "data/v25_shift_xyz.pt"
+    if os.environ.get("GL_CUBE_RANGE"):
+        gl_pregrasp_start = True
+        gl_cube_dx_m = gl_cube_dy_m = float(os.environ["GL_CUBE_RANGE"])
+    # v27 (user: range too small): cube anywhere in the box (x_min, x_max, y_min, y_max), pre-grasp
+    # pose from the exact-IK grid (data/v27_shift_grid.pt, last knot). GL_CUBE_BOX=1 -> V27 box.
+    gl_cube_box_m = None
+    gl_shift_grid_path = ""
+    if os.environ.get("GL_CUBE_BOX"):
+        gl_pregrasp_start = True
+        gl_cube_box_m = (-0.08, 0.02, -0.05, 0.06)
+        gl_shift_grid_path = "data/v27c_shift_grid.pt"
+    # v27c: in the chain the raise ends ~1-1.5 deg off the exact pre-grasp (residual policy, sag),
+    # where the v27b grasp lifted 2/9 positions vs 8/9 from the exact pose. GL_START_NOISE_DEG:
+    # uniform +/- noise on each arm joint of the start pose (actual and target alike).
+    gl_start_noise_deg = float(os.environ.get("GL_START_NOISE_DEG", "0"))
+    # v27f: the far corner (x -8, y -5 cm) never lifted (hand turns away while closing, pads 0 N);
+    # uniform sampling rarely draws it. GL_HARD_FRAC: that share of episodes from gl_hard_box_m.
+    gl_hard_frac = float(os.environ.get("GL_HARD_FRAC", "0"))
+    lift_extra_gain = float(os.environ.get("GL_LIFT_EXTRA", "0"))
+    # v27l: at x -8 the cube is dragged 8-10 cm along the table before it rises (the hand pulls back
+    # first); x/y position (GL_XY 100) and speed (GL_XY_VEL 100) costs did not move it (33-40 mm mean).
+    # GL_DRAG: cost per m/s of cube x/y speed only while it is still on the table (rise < 5 mm).
+    gl_drag_cost = float(os.environ.get("GL_DRAG", "0"))
+    # v27o (user: "why does it bend to the right after lifting"): the shoulder yaw / forearm / wrist
+    # yaw opened in v27h (lift_extra_gain) swing the lifted hand sideways (model_4675: wrist yaw +15 deg,
+    # hand direction y 0.20 -> 0.27; model_5525: shoulder yaw +4 deg). GL_EXTRA_COST: cost per rad of
+    # lift offset on those joints, so they are used only where needed (the far corner).
+    gl_extra_cost = float(os.environ.get("GL_EXTRA_COST", "0"))
+    # v28 (user approved "넣어라", 2026-11-02): IK-assisted lift. The cube was dragged 30-100 mm before
+    # rising because joint-rate lifting pulls the extended arm back; GL_LIFT_IK=1 makes the lift action a
+    # grasp-point velocity (up / x / y) mapped to the arm joints by the Jacobian, hand orientation held.
+    lift_ik = bool(os.environ.get("GL_LIFT_IK"))
+    lift_ik_vz = 0.025         # m/s up at action 1 (0.05 lifted before the grip closed)
+    lift_ik_vxy = 0.005        # m/s sideways at action 1 (0.015: policy dragged the cube 50-70 mm at x -8)
+    lift_ik_rot_gain = 2.0     # 1/s, hold hand orientation
+    lift_ik_damping = 0.02
+    lift_ik_max_rate = 0.6     # rad/s per joint
+    lift_ik_range_rad = 1.0
+    # v28e: v28d plateaued (train lifted 36-40%, mean rise 31 mm of 80); hand pitch command and faster lift
+    if os.environ.get("GL_IK_PITCH"):
+        lift_ik_pitch_rate = float(os.environ["GL_IK_PITCH"])  # rad/s at action 6
+    if os.environ.get("GL_IK_VZ"):
+        lift_ik_vz = float(os.environ["GL_IK_VZ"])
+    # v28h: the policy kept commanding +x/−y (0.5 cm/s) after the lift, carrying the held cube 25-40 mm
+    # sideways; GL_IK_VXY=0 removes the sideways command (straight up only, plus hand pitch)
+    if os.environ.get("GL_IK_VXY"):
+        lift_ik_vxy = float(os.environ["GL_IK_VXY"])
+    # v29: after the lift, back to the L (arm 0, 0, 0, 90, 0, 0, 0 deg + sag offsets) for the hand-over
+    lift_return_L = bool(os.environ.get("GL_RETURN_L"))
+    lift_return_rise_m = 0.05
+    lift_return_hold_s = 0.5
+    lift_return_s = float(os.environ.get("GL_RETURN_S", "2.5"))
+    # v46: GL_RET_RISE (m) - the L-return trigger height (default 5 cm); the learned-grip policies stalled at 4.5-5 cm
+    # in the x -3 cm row (v45d_r2 model_9350: 82% of the envs without lift_done never passed 5 cm)
+    if os.environ.get("GL_RET_RISE"):
+        lift_return_rise_m = float(os.environ["GL_RET_RISE"])
+    # v46c: GL_EP_S (s) - episode length (default 12 s = 7 s from the close); with lift_done at ~5.2 s after the close only
+    # ~1.8 s of holding at the L was trained, while evals hold for 12 s and the late-round checkpoints dropped 2-7% there
+    if os.environ.get("GL_EP_S"):
+        episode_length_s = float(os.environ["GL_EP_S"])
+    # v34: grip action held during the return (None = the policy's value at the return start)
+    lift_return_a7 = float(os.environ["GL_RETURN_A7"]) if os.environ.get("GL_RETURN_A7") else None
+    lift_return_q_deg = (1.9, 0.0, 0.0, 92.1, 0.0, 0.7, -0.2)
+    # v31 (user: at the L the wrist should face straight ahead, it was a little crooked): with the
+    # grip-shape fingers the hand pointed 7 deg toward the body and 2.5 deg up (three-fingertip direction
+    # (-0.991, -0.125, 0.044)); shoulder yaw +7.2 and wrist pitch -2.6 deg make it (-1, 0, 0)
+    # (artifacts/claude_scripts/v31_wrist_probe.py). Wrist yaw / forearm cannot: at the L they roll the hand.
+    lift_return_q_deg = (1.9, 0.0, 7.2, 92.1, 0.0, -1.9, -0.2)
+    # v33 sensorless version (user 2026-11-04: pressure sensors not delivered; keep the sensor version and
+    # build sim-to-real on a sensorless one). GL_NO_PAD=1: policy pad inputs read 0 and the balanced close
+    # and lift_done use the grip force estimated from the finger drive torque instead of the pad forces.
+    gl_no_pad = bool(os.environ.get("GL_NO_PAD"))
+    close_force_source = "torque" if os.environ.get("GL_NO_PAD") else "pad"
+    close_torque_lever_m = 0.06
+    # v34 (user 2026-11-04: also train for different table heights; range +/-3 cm): GL_TABLE_DZ (m) moves
+    # the table (kinematic) and the cube by a uniform per-episode z offset, and the pre-grasp start pose by
+    # the table z column of gl_shift_path (rad per m). The cube height is already observed. GL_TABLE_DZ_FIXED
+    # pins the offset (renders, evals).
+    gl_table_dz_m = float(os.environ.get("GL_TABLE_DZ", "0"))
+    gl_shift_grid_dzm3_path = "data/v34c_shift_grid_dzm3.pt"  # as v2_arm_raise.JaxV2RaiseCubeWideEnvCfg
+    gl_shift_grid_dzp3_path = "data/v34c_shift_grid_dzp3.pt"
+    # v35 (user 2026-11-04: grasp unstable as y changes): the fingers only reached the robot-side ~2 cm of
+    # the cube (cube leaning 5-8 deg in the hand, slipping out in the L return). GL_REACH_DX (m, negative =
+    # away from the robot) moves the pre-grasp hand by that much in x; grids widened to +/-10 cm for it.
+    gl_reach_dx_m = float(os.environ.get("GL_REACH_DX", "0"))
+    # moving in only put the thumb on the cube's robot-side face (it sits at the -y face's corner): GL_REACH_DY
+    # (m) also moves the hand sideways (negative = toward the thumb side)
+    gl_reach_dy_m = float(os.environ.get("GL_REACH_DY", "0"))
+    if gl_reach_dx_m or gl_reach_dy_m:
+        gl_shift_grid_path = "data/v34wc.pt"
+        gl_shift_grid_dzm3_path = "data/v34w_dzm3c.pt"
+        gl_shift_grid_dzp3_path = "data/v34w_dzp3c.pt"
+    # v34b (user: "look from the camera's view of the table"): GL_TABLE_REL=1 observes the cube z relative
+    # to the table top (obs 30 minus the table offset; unchanged at the nominal table)
+    gl_table_rel = bool(os.environ.get("GL_TABLE_REL"))
+    gl_table_dz_fixed = float(os.environ["GL_TABLE_DZ_FIXED"]) if os.environ.get("GL_TABLE_DZ_FIXED") else None
+    if gl_table_dz_m or gl_table_dz_fixed is not None:
+        table_cfg = JaxV2FrontLiftRLEnvCfg().table_cfg.replace(
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=20.0))
+    # v36 (user 2026-11-04: "change the friction and try again"): sim friction was cube 1.2/1.0 against the
+    # robot's default 1.0/1.0 (average ~1.1); PLA on PLA is ~0.3-0.5. GL_MU="static,dynamic" sets both the cube
+    # and the default material (robot links), so finger-cube contacts use that pair. The table keeps its own.
+    if os.environ.get("GL_MU"):
+        _mu = [float(v) for v in os.environ["GL_MU"].split(",")]
+        _mat = sim_utils.RigidBodyMaterialCfg(static_friction=_mu[0], dynamic_friction=_mu[1], restitution=0.0)
+        object_cfg = JaxV2FrontLiftRLEnvCfg().object_cfg.replace(
+            spawn=JaxV2FrontLiftRLEnvCfg().object_cfg.spawn.replace(physics_material=_mat))
+        sim = JaxV2FrontLiftRLEnvCfg().sim.replace(physics_material=_mat)
+    # v36: squeeze total = close_squeeze_n + close_squeeze_range_n x action 7; GL_SQUEEZE="base,range" (N), and
+    # GL_FIRST_MAX="f1,f2,thumb" (deg) the first-joint close limits (the thumb stopped at 0 deg short of the force)
+    if os.environ.get("GL_SQUEEZE"):
+        close_squeeze_n, close_squeeze_range_n = [float(v) for v in os.environ["GL_SQUEEZE"].split(",")]
+    if os.environ.get("GL_FIRST_MAX"):
+        close_first_max_deg = tuple(float(v) for v in os.environ["GL_FIRST_MAX"].split(","))
+    # v37 (user 2026-11-04 CAD of the real stand): floor -> shoulder axis 1207.5 mm (sim 1155), table top 735 mm,
+    # shoulder axis -> table front edge 600 mm (sim 340). GL_LAYOUT_REAL=1 places the robot base 52.5 mm higher,
+    # the table top at 0.735 m and its front edge 0.60 m ahead, the cube 6 cm in from the edge as before.
+    # The raise path, grids and policies are still the old layout's (for a look at the real geometry only).
+    if os.environ.get("GL_LAYOUT_REAL"):
+        robot_base_z = 1.2075 - 0.850
+        robot_cfg = robot_cfg.replace(init_state=robot_cfg.init_state.replace(pos=(0.0, 0.0, 1.2075 - 0.850)))
+        pedestal_cfg = JaxV2FrontLiftRLEnvCfg().pedestal_cfg.replace(height=1.2075 - 0.850)
+        table_top_z = 0.735
+        table_center = (-0.60 - 0.40, 0.0, 0.735 - 0.02)
+        object_x = (-0.66, -0.66)
+    gl_old_latch = bool(os.environ.get("GL_OLD_LATCH"))
+    # v38: GL_LIFT_WAIT=1 - the lift commands (IK velocity, hand pitch) act only after all three digits touched
+    lift_wait_grip = bool(os.environ.get("GL_LIFT_WAIT"))
+    # v41 (user 2026-11-04: robot body front -> table front edge 10 cm, heights as before): GL_TABLE_EDGE (m) = table
+    # front edge ahead of the shoulder axis / body centre (0.34 before; body front face at 0.125 -> 0.225). The cube
+    # stays 6 cm in from the edge; pre-grasp grids for that (data/v41_*c.pt, whole path moved toward the robot by
+    # the same amount). The cube observation is offset by the move so the nominal spot reads as before.
+    gl_layout_shift_m = 0.0
+    if os.environ.get("GL_TABLE_EDGE"):
+        _edge = float(os.environ["GL_TABLE_EDGE"])
+        gl_layout_shift_m = 0.34 - _edge
+        table_center = (-(_edge + 0.40), 0.0, 0.72)
+        object_x = (-(_edge + 0.06), -(_edge + 0.06))
+        gl_shift_grid_path = "data/v41_basec.pt"
+        gl_shift_grid_dzm3_path = "data/v41_m3c.pt"
+        gl_shift_grid_dzp3_path = "data/v41_p3c.pt"
+    # v41b (user: "the cube angle changing while lifting is annoying"): GL_ROT sets the cube-rotation cost (per rad)
+    if os.environ.get("GL_ROT"):
+        gl_rot_cost = float(os.environ["GL_ROT"])
+    # v41c (cube tilted 12-14 deg on the table while the 6 N squeeze built up: the thumb pad pressed ~1 cm below the
+    # fingers' mean height, so the opposed forces rolled the cube): GL_RB_DELTA_DEG sets the RotationBody turn of the
+    # pre-grasp (start_arm_q -155 deg + this; -15 so far = -170, which lowered the thumb), start pose included
+    if os.environ.get("GL_RB_DELTA_DEG"):
+        pre_rotation_delta_deg = float(os.environ["GL_RB_DELTA_DEG"])
+        gl_pregrasp_q_deg = tuple(gl_pregrasp_q_deg[:7]) + (-155.0 + pre_rotation_delta_deg,)
+    lift_ik_no_down = bool(os.environ.get("GL_IK_NO_DOWN"))  # v41d: clamp the IK lift command to up only
+    # v43: GL_GRAV_COMP=1 - start-pose targets from the gravity torque at that pose (no drift); GL_IK_POS=k (1/s) - the
+    # IK lift tracks an integrated grasp-point target (drift corrected instead of accumulating)
+    gl_grav_comp = bool(os.environ.get("GL_GRAV_COMP"))
+    lift_ik_pos_gain = float(os.environ.get("GL_IK_POS", "0"))
+    # v43b: GL_LIFT_SQUEEZE=frac - lift commands act only once every digit holds frac x its squeeze target (the policy
+    # moved the hand while the squeeze built up and rolled the cube 13 deg; holding still: 4 deg)
+    lift_wait_squeeze_frac = float(os.environ.get("GL_LIFT_SQUEEZE", "0"))
+    if lift_wait_squeeze_frac:
+        lift_wait_grip = True
+    gl_roll_deg = float(os.environ.get("GL_ROLL_DEG", "0"))  # v43c: pre-grasp hand roll (wrist-yaw joint, deg)
+    # v45 (user: "train the grasp, option 3"): GL_FINGER_RL=1 - the policy sets the finger-side and thumb squeeze
+    # (actions 7 and 9, base + range x action, N) and the distal-joint curl (actions 8 fingers, 10 thumb, deg)
+    close_rl_grip = bool(os.environ.get("GL_FINGER_RL"))
+    close_rl_force_base_n = 5.0
+    close_rl_force_range_n = 4.0
+    close_rl_curl_deg = 60.0
+    close_rl_force_max_n = float(os.environ["GL_RL_FORCE_MAX"]) if os.environ.get("GL_RL_FORCE_MAX") else None  # v47b
+    # v48 (user 2026-11-04: "the first joint should sit fully on the cube", "grip deeper"): GL_PROX=scale rewards the
+    # first-joint (proximal) pads on the cube while the distal grip holds: scale x sum over the 3 pads of
+    # min(force / gl_prox_sat_n, 1). With the hand 1.5 cm deeper the trained policy let them go (0.2-0.5 -> 0.02-0.3 N).
+    gl_prox_scale = float(os.environ.get("GL_PROX", "0"))
+    gl_prox_sat_n = 0.5
+    # v48e: GL_PROX_MIN=k adds k x 3 x min over the 3 first-joint pads of min(F / gl_prox_sat_n, 1): the sum alone let one
+    # finger carry it (v48d 11925 at lift_done: 0.17 / 1.04 / 0.00 N, thumb off; v48c 11750: 0.13 / 0.45 / 0.34 N)
+    gl_prox_min_scale = float(os.environ.get("GL_PROX_MIN", "0"))
+    # v48i: GL_HOLD_DIGIT=1 - "holding" (the reward's hold/hold3 terms, which also gate the rise rewards, and the lift_done
+    # grip check) counts each digit's first + distal pad force instead of the distal pad alone: deeper grasps move the
+    # force to the first joints, the distal pad drops under 0.3 N and a held cube read as not held (v48h 12500: lifted
+    # 99.1% but lift_done 95.5%), so training learned to keep the force on the distal pads and let the first joints go
+    hold_digit_total = bool(os.environ.get("GL_HOLD_DIGIT"))
+    # v48j: GL_MU_RAND="lo,hi" - per-episode static friction drawn from [lo, hi] for the cube and every robot shape
+    # (dynamic = static - 0.05), so the cube-finger contact uses it as is; v48i2 12750 (trained at 0.4/0.35) held 99.3%
+    # at 0.4 but 93.8% at 0.35/0.3
+    gl_mu_rand = tuple(float(v) for v in os.environ["GL_MU_RAND"].split(",")) if os.environ.get("GL_MU_RAND") else None
+    close_rl_curl_fix_finger_deg = float(os.environ["GL_CURL_F_DEG"]) if os.environ.get("GL_CURL_F_DEG") else None  # v48f probe
+    gl_ret_free = bool(os.environ.get("GL_RET_FREE"))  # v45d: no motion costs during the scripted L return
+    if os.environ.get("GL_RETURN_Q"):  # comparison renders (7 arm targets, deg)
+        lift_return_q_deg = tuple(float(v) for v in os.environ["GL_RETURN_Q"].split(","))
+    # v30: hand-over signal (lift_done): at the L, still (< 0.05 deg per step = 3 deg/s), gripping, for 0.5 s
+    lift_done_hold_s = 0.5
+    lift_done_still_deg = 0.05
+    gl_hard_box_m = (-0.08, -0.05, -0.05, -0.02)
+    # v27g: at x -8 the lift drags the cube 4-6 cm toward the robot before it rises (the same joint
+    # 0/3/5 offsets pull the extended arm back); the whole far column is hard. GL_HARD_BOX="x0,x1,y0,y1"
+    if os.environ.get("GL_HARD_BOX"):
+        gl_hard_box_m = tuple(float(v) for v in os.environ["GL_HARD_BOX"].split(","))
+    # v26_cube (cube +/-2 cm, from v16_tbl model_2450): deterministic lift 92% -> 81% (25 it)
+    # -> 0% (300 it). With the cube placed elsewhere it slides 10-25 mm while lifting; the
+    # x/y costs and the quality-gated bonuses made not lifting pay. GL_RISE / GL_LATE / GL_XY.
+    if os.environ.get("GL_RISE"):
+        gl_rise_scale = float(os.environ["GL_RISE"])
+    if os.environ.get("GL_LATE"):
+        gl_late_cost = float(os.environ["GL_LATE"])
+    if os.environ.get("GL_XY"):
+        gl_xy_cost = float(os.environ["GL_XY"])
+
+
+class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
+    cfg: JaxV2FrontGraspLiftEnvCfg
+
+    def _lifting(self) -> torch.Tensor:
+        # v38 fix: with the pre-grasp start every episode begins at the close with the lift phase already on, so
+        # the lift state that refreshes only while not lifting (L-return progress, lift_done, cube and hand
+        # reference poses, IK hand-orientation target) carried over from earlier episodes in training: once an
+        # env had returned to the L, every later episode returned at once and never grasped (v34_relret and later
+        # collapsed). The lift phase now starts 2 steps into each such episode, which refreshes all of it.
+        # GL_OLD_LATCH=1 restores the old timing.
+        t = self.episode_length_buf * self.step_dt
+        if self.cfg.gl_pregrasp_start and not self.cfg.gl_old_latch:
+            return t >= self.cfg.lift_after_s + 1.5 * self.step_dt
+        return t >= self.cfg.lift_after_s
+
+    def _get_observations(self):
+        obs = super()._get_observations()
+        if self.cfg.gl_layout_shift_m:
+            # v41: base-frame y is world x (toward the robot); the cube spot moved that much
+            obs["policy"][:, 29] -= self.cfg.gl_layout_shift_m
+        if self.cfg.gl_table_rel and hasattr(self, "_gl_table_dz"):
+            # v34b: cube height seen from the table (as a camera on the table would), offset so the nominal
+            # table reads as before: the robot-base-frame cube z minus this episode's table offset
+            obs["policy"][:, 30] -= self._gl_table_dz
+        return obs
+
+    def _setup_scene(self):
+        super()._setup_scene()
+        if self.cfg.gl_table_dz_m or self.cfg.gl_table_dz_fixed is not None:
+            self.table = RigidObject(RigidObjectCfg(prim_path="/World/envs/env_.*/Table", spawn=None))
+            self.scene.rigid_objects["table"] = self.table
+
+    def _reset_idx(self, env_ids):
+        super()._reset_idx(env_ids)
+        c = self.cfg
+        ids = self.robot._ALL_INDICES if env_ids is None else env_ids
+        n = len(ids)
+        if hasattr(self, "_grip_latched"):
+            self._grip_latched[ids] = False
+        if c.gl_mu_rand:
+            # v48j: per-episode friction for the cube and the robot (PhysX average-combines the two, so both get it)
+            ids_cpu = ids.detach().cpu() if torch.is_tensor(ids) else torch.as_tensor(ids)
+            mu_s = torch.empty(len(ids_cpu)).uniform_(c.gl_mu_rand[0], c.gl_mu_rand[1])
+            mu_d = (mu_s - 0.05).clamp_min(0.05)
+            for asset in (self.object, self.robot):
+                mats = asset.root_physx_view.get_material_properties()
+                mats[ids_cpu, :, 0] = mu_s[:, None]
+                mats[ids_cpu, :, 1] = mu_d[:, None]
+                asset.root_physx_view.set_material_properties(mats, ids_cpu)
+            if not hasattr(self, "_gl_mu"):
+                self._gl_mu = torch.zeros(self.num_envs)
+            self._gl_mu[ids_cpu] = mu_s
+        dz = None
+        if hasattr(self, "table"):
+            # v34: table and cube up/down by this episode's offset
+            if not hasattr(self, "_gl_table_dz"):
+                self._gl_table_dz = torch.zeros(self.num_envs, device=self.device)
+            if c.gl_table_dz_fixed is not None:
+                self._gl_table_dz[ids] = c.gl_table_dz_fixed
+            else:
+                self._gl_table_dz[ids] = c.gl_table_dz_m * (2.0 * torch.rand(n, device=self.device) - 1.0)
+            dz = self._gl_table_dz[ids]
+            pose = torch.zeros((n, 7), device=self.device)
+            pose[:, :3] = self.scene.env_origins[ids] + torch.tensor(c.table_center, device=self.device)
+            pose[:, 2] += dz
+            pose[:, 3] = 1.0
+            self.table.write_root_pose_to_sim(pose, env_ids=ids)
+            cube = self.object.data.root_state_w[ids].clone()
+            cube[:, 2] += dz
+            cube[:, 7:] = 0.0
+            self.object.write_root_pose_to_sim(cube[:, :7], env_ids=ids)
+            self.object.write_root_velocity_to_sim(cube[:, 7:], env_ids=ids)
+        if not c.gl_pregrasp_start:
+            return
+        if not hasattr(self, "_gl_cube_off"):
+            self._gl_cube_off = torch.zeros((self.num_envs, 2), device=self.device)
+            S = torch.load(os.path.join(os.path.dirname(__file__), c.gl_shift_path))
+            self._gl_shift = S[-1].to(self.device)  # (8, 3) rad per m, pre-grasp knot
+        lim = torch.tensor([c.gl_cube_dx_m, c.gl_cube_dy_m], device=self.device)
+        off = lim * (2.0 * torch.rand((n, 2), device=self.device) - 1.0)
+        if c.gl_cube_box_m:
+            b = torch.tensor(c.gl_cube_box_m, device=self.device)
+            off = b[0::2] + (b[1::2] - b[0::2]) * torch.rand((n, 2), device=self.device)
+            if c.gl_hard_frac > 0.0:
+                hb = torch.tensor(c.gl_hard_box_m, device=self.device)
+                hard = hb[0::2] + (hb[1::2] - hb[0::2]) * torch.rand((n, 2), device=self.device)
+                off = torch.where((torch.rand(n, device=self.device) < c.gl_hard_frac)[:, None], hard, off)
+        fixed = getattr(self, "_gl_cube_off_fixed", None)
+        if fixed is not None:
+            off = fixed[ids] if fixed.shape[0] == self.num_envs else fixed.expand(n, -1)
+        self._gl_cube_off[ids] = off
+        # cube moved on the table
+        cube = self.object.data.root_state_w[ids].clone()
+        cube[:, 0:2] = cube[:, 0:2] + off
+        cube[:, 7:] = 0.0
+        self.object.write_root_pose_to_sim(cube[:, :7], env_ids=ids)
+        self.object.write_root_velocity_to_sim(cube[:, 7:], env_ids=ids)
+        # arm in the pre-grasp pose for that cube (actual = geometric pose, targets + sag offsets)
+        arm = list(self.arm_ids)
+        q8 = self.targets.new_tensor([math.radians(v) for v in c.gl_pregrasp_q_deg]) + (self._gl_shift[:, :2] @ off.T).T
+        if c.gl_shift_grid_path:
+            from .v2_arm_raise import grid_weights
+            if not hasattr(self, "_gl_grid"):
+                d = torch.load(os.path.join(os.path.dirname(__file__), c.gl_shift_grid_path))
+                self._gl_grid = (d["gx"].to(self.device), d["gy"].to(self.device), d["dq"][-1].reshape(-1, 8).to(self.device))
+            gx, gy, G = self._gl_grid
+            q8 = self.targets.new_tensor([math.radians(v) for v in c.gl_pregrasp_q_deg]) + grid_weights(gx, gy, off + off.new_tensor([c.gl_reach_dx_m, c.gl_reach_dy_m])) @ G
+        if dz is not None:
+            # blend toward the exact-IK grid at -3 / +3 cm (the linear z column was 3-7 mm off)
+            if not hasattr(self, "_gl_grid_m"):
+                ld = lambda f: torch.load(os.path.join(os.path.dirname(__file__), f))["dq"][-1].reshape(-1, 8).to(self.device)
+                self._gl_grid_m, self._gl_grid_p = ld(c.gl_shift_grid_dzm3_path), ld(c.gl_shift_grid_dzp3_path)
+            from .v2_arm_raise import grid_weights
+            gx, gy, G = self._gl_grid
+            Wg = grid_weights(gx, gy, off + off.new_tensor([c.gl_reach_dx_m, c.gl_reach_dy_m]))
+            q8 = q8 + (dz / -0.03).clamp_min(0.0)[:, None] * (Wg @ self._gl_grid_m - Wg @ G)
+            q8 = q8 + (dz / 0.03).clamp_min(0.0)[:, None] * (Wg @ self._gl_grid_p - Wg @ G)
+        if c.gl_roll_deg:
+            # v43c: roll the hand about its long axis at the pre-grasp (wrist-yaw joint): the cube settled 13 deg rolled in
+            # the grip whatever the depth, squeeze or policy, as if the pinch were tilted
+            q8[:, 6] = q8[:, 6] + math.radians(c.gl_roll_deg)
+        if getattr(c, "gl_start_noise_deg", 0.0):
+            nz = math.radians(c.gl_start_noise_deg) * (2.0 * torch.rand_like(q8) - 1.0)
+            nz[:, 1] = 0.0; nz[:, 7] = 0.0  # shoulder roll (at its limit) and hand rotation stay
+            q8 = q8 + nz
+        tg8 = q8 + self.targets.new_tensor([math.radians(v) for v in c.gl_sag_comp_deg])
+        q = self.robot.data.joint_pos[ids].clone()
+        q[:, arm] = q8
+        q[:, self.finger_ids] = self._hand_shape
+        targets = self.targets[ids]
+        targets[:, arm] = tg8
+        targets[:, self.finger_ids] = self._hand_shape
+        self.targets[ids] = targets
+        self.robot.write_joint_state_to_sim(q, torch.zeros_like(q), env_ids=ids)
+        if c.gl_grav_comp:
+            # v43: hold the start pose exactly: arm targets = pose + gravity torque / kp at that pose (the constant sag
+            # offsets fit the old layout's pre-grasp; elsewhere they over- or under-shot and the arm drifted, 4-11 mm up
+            # in the 22.5 cm table layout, which the policy fought by pressing the cube down and rolling it)
+            grav = self.robot.root_physx_view.get_gravity_compensation_forces()[ids][:, arm]
+            kp = self.robot.data.joint_stiffness[ids][:, arm].clamp_min(1e-3)
+            tg8 = q8 + grav / kp
+            targets[:, arm] = tg8
+            self.targets[ids] = targets
+        self.robot.set_joint_position_target(targets, env_ids=ids)
+        # the episode starts at the close; holds latch to these targets
+        self.episode_length_buf[ids] = round(c.close_after_s / self.step_dt)
+        # create the holds here: created lazily in the first step they would latch the
+        # v12 pre-grasp target (the L) instead of this pose
+        for name in ("_arm_hold", "_lift_hold"):
+            if not hasattr(self, name):
+                setattr(self, name, self.targets[:, list(self.arm_ids[:7])].clone())
+        if not hasattr(self, "_lift_offset"):
+            self._lift_offset = torch.zeros((self.num_envs, 7), device=self.device)
+        for name in ("_arm_hold", "_lift_hold"):
+            if hasattr(self, name):
+                getattr(self, name)[ids] = tg8[:, :7]
+        if hasattr(self, "_arm_smooth"):
+            self._arm_smooth[ids] = tg8[:, :7]
+        if hasattr(self, "_lift_offset"):
+            self._lift_offset[ids] = 0.0
+        if hasattr(self, "_bal_q"):
+            self._bal_q[ids] = self._hand_shape
+
+    def _get_rewards(self):
+        reward = super()._get_rewards()
+        if self.cfg.gl_reward:
+            return self._gl_reward()
+        log = self.extras["log"]
+        closing = self._closing()
+        on = JaxV2PadSensorGraspEnv.pad_forces(self) >= self.cfg.close_touch_n
+        n_on = on.float().sum(dim=1)
+        terms = self.cfg.gl_contact_scale * n_on - self.cfg.gl_table_force_scale * self._table_force
+        reward = reward + closing.float() * terms
+        n = closing.float().sum().clamp_min(1.0)
+        log["gl_pads_on"] = (n_on * closing).sum() / n
+        log["gl_all_distal"] = (on[:, 3:].all(dim=1) & closing).float().sum() / n
+        log["gl_table_force_n"] = (self._table_force * closing).sum() / n
+        log["gl_spawn_xy_mm"] = 1000.0 * (self._cube_shift * closing).sum() / n
+        return reward
+
+    def _gl_reward(self) -> torch.Tensor:
+        c = self.cfg
+        log = self.extras["log"]
+        closing = self._closing()
+        pf_all = JaxV2PadSensorGraspEnv.pad_forces(self)
+        on = pf_all >= c.close_touch_n
+        n_on = on.float().sum(dim=1)
+        distal = on[:, 3:]
+        if c.hold_digit_total:
+            distal = (pf_all[:, :3] + pf_all[:, 3:]) >= c.close_touch_n  # v48i: per digit, first + distal pad
+        hold = (distal[:, 2] & distal[:, :2].any(dim=1)).float()
+        hold3 = distal.all(dim=1).float()
+        rise = self._cube_rise
+        xy = self._cube_shift
+        rot = torch.deg2rad(self._cube_rotation_deg)
+        hand_q = self.robot.data.body_quat_w[:, self._hand_id]
+        hand_rot = 2.0 * torch.acos((hand_q * self._lift_hand_q0).sum(dim=1).abs().clamp(max=1.0))
+        angvel = self.object.data.root_ang_vel_w.square().sum(dim=1)
+        quality = torch.exp(-xy / c.gl_xy_m) * torch.exp(-rot / c.gl_rot_rad)
+        progress = (rise / c.lift_target_m).clamp(0.0, 1.0)
+        at_target = torch.exp(-(rise - c.lift_target_m).abs() / c.gl_target_m)
+        late = (self.episode_length_buf * self.step_dt >= c.gl_late_s).float()
+        rate = (self.actions[:, :7] - self.previous_actions[:, :7]).square().sum(dim=1)
+        arm_vel = self.robot.data.joint_vel[:, self.arm_ids[:7]]
+        still = hold * (at_target > 0.5).float() * (arm_vel.abs().amax(dim=1) < c.gl_still_speed).float()
+        # v45d: GL_RET_FREE=1 - while the scripted L return moves the arm, the cube/hand motion costs are off and the
+        # rise rewards are not quality-gated (with the rotation cost at 30 the policy stopped lifting at ~3 cm, below the
+        # 5 cm return trigger, to avoid the return's rotation and x/y costs)
+        ret = (self._ret_t >= 0).float() if (c.gl_ret_free and hasattr(self, "_ret_t")) else None
+        if ret is not None:
+            quality = quality * (1.0 - ret) + ret
+        terms = {
+            "hold": c.gl_hold_scale * hold,
+            "hold3": c.gl_hold3_scale * hold3,
+            "contact": c.gl_contact_scale * n_on,
+            "rise": c.gl_rise_scale * progress * hold * (quality if c.gl_rise_gated else 1.0),
+            "straight": c.gl_straight_scale * progress * hold * quality,
+            "target": c.gl_target_scale * at_target * hold * quality,
+            "xy": -c.gl_xy_cost * xy,
+            "xy_vel": -c.gl_xy_vel_cost * torch.linalg.vector_norm(self.object.data.root_lin_vel_w[:, :2], dim=1),
+            "rot": -c.gl_rot_cost * rot,
+            "angvel": -c.gl_angvel_cost * angvel,
+            "hand_rot": -c.gl_hand_rot_cost * hand_rot,
+            "over": -c.gl_over_cost * (rise - c.lift_target_m).clamp_min(0.0),
+            "late": -c.gl_late_cost * late * (1.0 - progress),
+            "rate": -c.gl_rate_cost * rate,
+            "table": -c.gl_table_force_scale * self._table_force,
+            "arm_vel": -c.gl_arm_vel_cost * arm_vel.square().sum(dim=1) * hold * (rise > c.gl_arm_vel_from * c.lift_target_m).float(),
+            "still": c.gl_still_scale * still,
+            "extra": -c.gl_extra_cost * (self._lift_offset[:, [2, 4, 6]].abs().sum(dim=1) if hasattr(self, "_lift_offset") else 0.0 * rise),
+            "drag": -c.gl_drag_cost * torch.linalg.vector_norm(self.object.data.root_lin_vel_w[:, :2], dim=1) * (rise < 0.005).float(),
+            "prox": c.gl_prox_scale * hold * (pf_all[:, :3] / c.gl_prox_sat_n).clamp(0.0, 1.0).sum(dim=1)
+            + c.gl_prox_min_scale * hold * 3.0 * (pf_all[:, :3] / c.gl_prox_sat_n).clamp(0.0, 1.0).amin(dim=1),
+        }
+        if ret is not None:
+            for k in ("xy", "xy_vel", "rot", "angvel", "hand_rot", "over", "late", "drag"):
+                terms[k] = terms[k] * (1.0 - ret)
+        reward = closing.float() * sum(terms.values()) * c.gl_reward_scale
+        n = closing.float().sum().clamp_min(1.0)
+        for key, v in terms.items():
+            log[f"gl_r_{key}"] = (v * closing).sum() / n
+        lifted = hold * (rise > 0.5 * c.lift_target_m).float()
+        straight = lifted * (xy < 0.01).float() * (rot < 0.17).float()
+        log["gl_lifted"] = (lifted * closing).sum() / n
+        log["gl_straight"] = (straight * closing).sum() / n
+        log["gl_rise_mm"] = 1000.0 * (rise * closing).sum() / n
+        log["gl_spawn_xy_mm"] = 1000.0 * (xy * closing).sum() / n
+        log["gl_rot_deg"] = torch.rad2deg((rot * closing).sum() / n)
+        log["gl_hand_rot_deg"] = torch.rad2deg((hand_rot * closing).sum() / n)
+        log["gl_all_distal"] = (hold3 * closing).sum() / n
+        log["gl_pads_on"] = (n_on * closing).sum() / n
+        log["gl_prox_n"] = (pf_all[:, :3].sum(dim=1) * closing).sum() / n
+        log["gl_table_force_n"] = (self._table_force * closing).sum() / n
+        log["gl_arm_speed_deg_s"] = torch.rad2deg((arm_vel.abs().amax(dim=1) * closing).sum() / n)
+        log["gl_still"] = (still * closing).sum() / n
+        return reward

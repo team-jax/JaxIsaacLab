@@ -1,0 +1,155 @@
+"""v12: from the L pose, reach the frontal pre-grasp pose and stop (no grasp).
+
+Same start and hand shape as v11 (L pose, thumb palm-side joint folded +90
+deg), but fingers 1/2 stay straight and the thumb's second joint stays at 0:
+the policy moves the arm only. Target: finger 1/2 second links just outside
+the cube's +y face at cube height, the folded thumb on the -y side, the hand
+level and pointing away from the robot, the cube untouched. None of the v8/v9
+grasp, hold or lift terms (or the auto lift) are used.
+"""
+
+from __future__ import annotations
+
+import math
+
+import torch
+
+from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_apply
+
+from .v2_front_grasp import JaxV2FrontGraspEnv, JaxV2FrontGraspEnvCfg
+
+
+@configclass
+class JaxV2FrontPregraspEnvCfg(JaxV2FrontGraspEnvCfg):
+    episode_length_s = 6.0
+    auto_lift = False
+    # v7 held wrist_yaw_to_hand_base within +/-60 deg; the v11 policies sat at
+    # that limit while turning the hand. Use the URDF range.
+    wrist_yaw_limit_rad = (-2.09, 2.09)
+    # The motor nearest the palm is RotationBody (hand_base_to_rotation_base),
+    # not the thumb's first finger joint: fold it 90 deg toward the palm and
+    # keep the thumb's own joints at 0 (used later for the actual grasp).
+    start_arm_q = (0.0, 0.0, math.radians(-30.0), math.pi / 2, 0.0, 0.0, 0.0, math.radians(-90.0))
+    # pregrasp model_1497 kept the hand level 9 cm above the target and never
+    # turned the finger pads toward the cube. Pay finger height and pads
+    # facing -y (fingers 1/2 on the right face as seen from the robot).
+    # rot90_height model_1746 swung the arm out: the target side was fixed
+    # (fingers +y only), the sharp position/height terms were ~1% at 9 cm,
+    # and hand-orientation terms could be earned anywhere. Either assignment
+    # (fingers on the +y or -y face, thumb opposite) now counts, position
+    # terms reach 10 cm, and orientation is paid near the target only.
+    pre_face_gap_m = 0.02
+    pre_broad_m = 0.08
+    pre_broad_scale = 1.0
+    pre_sharp_m = 0.02
+    pre_sharp_scale = 1.0
+    pre_height_m = 0.05
+    pre_height_scale = 0.3
+    pre_orient_near_m = 0.08
+    pre_pad_scale = 0.2
+    pre_front_scale = 0.2
+    pre_down_limit = -0.15
+    pre_down_scale = 0.5
+    # symmetric_c3 model_524 rested finger 1's pad on the cube at 0.2-0.3 N,
+    # under the 0.5 N contact threshold, with the hand 17 deg down.
+    pre_contact_force_n = 0.05
+    # symmetric_fresh model_249 reached the cube but its pads pressed it
+    # (0.1-0.3 N, cube moved 9 mm in 6 s); a pre-grasp must not touch.
+    pre_contact_scale = 0.5
+    pre_cube_move_scale = 5.0
+    pre_body_scale = 2.0
+    pre_success_err_m = 0.015
+    pre_success_speed_rad_s = 0.2
+    pre_success_scale = 0.5
+
+
+class JaxV2FrontPregraspEnv(JaxV2FrontGraspEnv):
+    cfg: JaxV2FrontPregraspEnvCfg
+
+    def _hold_hand_shape(self):
+        self.targets[:, self.finger_ids] = 0.0
+        self.targets[:, self.arm_ids[7]] = self.cfg.start_arm_q[7]
+
+    def _reset_idx(self, env_ids: torch.Tensor | None):
+        super()._reset_idx(env_ids)
+        ids = self.robot._ALL_INDICES if env_ids is None else env_ids
+        q = self.robot.data.joint_pos[ids].clone()
+        q[:, self.finger_ids] = 0.0
+        targets = self.targets[ids]
+        targets[:, self.finger_ids] = 0.0
+        self.targets[ids] = targets
+        self.robot.write_joint_state_to_sim(q, torch.zeros_like(q), env_ids=ids)
+        self.robot.set_joint_position_target(targets, env_ids=ids)
+
+    def _get_dones(self):
+        self._body_intrusion = self._body_intrusion_depth()
+        self._cube_shift, self._cube_rotation_deg = self._cube_pose_change()
+        fallen = self.object.data.root_pos_w[:, 2] < self.cfg.table_top_z - 0.05
+        timeout = self.episode_length_buf >= self.max_episode_length - 1
+        return fallen, timeout
+
+    def _get_rewards(self):
+        cube = self.object.data.root_pos_w
+        self._cube_start = torch.where(self._cube_start_valid[:, None], self._cube_start, cube)
+        self._cube_start_quat = torch.where(
+            self._cube_start_valid[:, None], self._cube_start_quat, self.object.data.root_quat_w
+        )
+        self._cube_start_valid[:] = True
+
+        tips = self.robot.data.body_pos_w[:, self.fingertip_ids]
+        fingers = tips[:, :2].mean(dim=1)
+        # Side the fingers are on (+1: +y face, -1: -y face); thumb opposite.
+        side = torch.where(fingers[:, 1] >= cube[:, 1], 1.0, -1.0)
+        target = cube.clone()
+        target[:, 1] += side * (self.cfg.object_size[1] / 2 + self.cfg.pre_face_gap_m)
+        err = torch.linalg.vector_norm(fingers - target, dim=1)
+        thumb_side = ((tips[:, 2, 1] - cube[:, 1]) * side < 0.0).float()
+        height_err = (fingers[:, 2] - cube[:, 2]).abs()
+        place = (
+            self.cfg.pre_broad_scale * torch.exp(-err / self.cfg.pre_broad_m)
+            + self.cfg.pre_sharp_scale * torch.exp(-err / self.cfg.pre_sharp_m) * thumb_side
+            + self.cfg.pre_height_scale * torch.exp(-height_err / self.cfg.pre_height_m)
+        )
+        X = torch.tensor([1.0, 0.0, 0.0], device=self.device).expand(self.num_envs * 2, 3)
+        pad_dir = quat_apply(self.robot.data.body_quat_w[:, list(self.fingertip_ids[:2])].reshape(-1, 4), X).reshape(-1, 2, 3)
+        pad_facing = (-side[:, None] * pad_dir[..., 1]).clamp(0.0, 1.0).mean(dim=1)
+        hand = self.robot.data.body_pos_w[:, self._hand_id]
+        d = fingers - hand
+        d = d / torch.linalg.vector_norm(d, dim=1, keepdim=True).clamp_min(1e-6)
+        front_quality = (-d[:, 0]).clamp(0.0, 1.0) * (1.0 - d[:, 2].abs() / self.cfg.front_level_tolerance).clamp(0.0, 1.0)
+        near = (err < self.cfg.pre_orient_near_m).float()
+        place = place + near * (self.cfg.pre_pad_scale * pad_facing + self.cfg.pre_front_scale * front_quality)
+        down = (self.cfg.pre_down_limit - d[:, 2]).clamp_min(0.0)
+
+        names = [f"proximal_{i}" for i in (1, 2, 3)] + [f"finger_{i}" for i in (1, 2, 3)]
+        contact_n = torch.stack(
+            [torch.linalg.vector_norm(self.scene.sensors[n].data.force_matrix_w[:, 0, 0], dim=-1) for n in names], dim=1
+        ).amax(dim=1)
+        touching = contact_n > self.cfg.pre_contact_force_n
+        arm_speed = self.robot.data.joint_vel[:, self.arm_ids[:7]].abs().amax(dim=1)
+        success = (
+            (err < self.cfg.pre_success_err_m) & (thumb_side > 0) & (front_quality > 0.7) & (pad_facing > 0.7)
+            & ~touching & (arm_speed < self.cfg.pre_success_speed_rad_s)
+        )
+        reward = (
+            place - self.cfg.pre_down_scale * down
+            - self.cfg.pre_contact_scale * touching.float()
+            - self.cfg.pre_cube_move_scale * self._cube_shift
+            - self.cfg.pre_body_scale * self._body_intrusion
+            + self.cfg.pre_success_scale * success.float()
+        )
+        self.extras["log"] = {
+            "pre_err_m": err.mean(),
+            "pre_height_err_m": height_err.mean(),
+            "pre_side_plus_y": (side > 0).float().mean(),
+            "pre_pad_facing": pad_facing.mean(),
+            "pre_thumb_side": thumb_side.mean(),
+            "pre_front_quality": front_quality.mean(),
+            "pre_hand_dir_z": d[:, 2].mean(),
+            "pre_touching": touching.float().mean(),
+            "pre_success": success.float().mean(),
+            "pre_cube_shift_m": self._cube_shift.mean(),
+            "pre_body_intrusion_m": self._body_intrusion.mean(),
+        }
+        return reward

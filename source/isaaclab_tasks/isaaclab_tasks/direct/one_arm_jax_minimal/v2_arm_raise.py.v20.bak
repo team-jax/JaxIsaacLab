@@ -1,0 +1,439 @@
+"""v17: raise the arm from hanging into the v16 pre-grasp start pose (the L).
+
+User (2026-10-29): one continuous motion from the hanging arm through the L
+into the v16 pre-grasp, grasp and lift, with no state reset in between. The
+v10 L-raise never reached its pose (l_success 0 in all eight runs) and aimed at
+another L (shoulder yaw -30 deg) and cube placement, so this stage is trained
+in the v16 scene for the v16 start pose: arm (0, 0, 0, 90, 0, 0, 0) deg and
+RotationBody -155 deg, at rest.
+
+Bending only the elbow swings the hand on a ~0.4 m arc about the elbow
+(z 0.898 m); it enters the table's x range (x < -0.34 m) at about z 0.69 m,
+below the 0.74 m top, so the fingers would hit the table edge. Hand points
+inside a keep-out box over the table are penalized, and the policy uses
+shoulder and wrist to clear it.
+
+Control: filtered delta targets on the seven arm joints and RotationBody
+(actions 0:8). The thumb first joint follows a scripted ramp to its pre-grasp
+-30 deg; the other finger joints stay at 0. Observation: the 43-dim v9
+observation, RotationBody unmasked.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import struct
+import xml.etree.ElementTree as ET
+
+import torch
+
+from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_apply
+
+from .v2_front_grasp_lift import JaxV2FrontGraspLiftEnvCfg
+from .v2_front_pregrasp import JaxV2FrontPregraspEnv, JaxV2FrontPregraspEnvCfg
+
+
+def _add_deg(waypoints, offset_deg):
+    return tuple((t, tuple(a + b for a, b in zip(q, offset_deg))) for t, q in waypoints)
+
+
+def raise_nominal(cfg, t: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
+    """Scripted nominal path (N, 8) at episode time t (N,): smoothstep from
+    hanging to the goal over raise_nominal_s, or through raise_waypoints
+    ((time_s, 8 joint deg), ...), smoothstep within each segment."""
+    wps = getattr(cfg, "raise_waypoints", None)
+    if not wps:
+        x = (t / cfg.raise_nominal_s).clamp(0.0, 1.0)[:, None]
+        return x * x * (3.0 - 2.0 * x) * goal
+    ts = [0.0] + [w[0] for w in wps]
+    qs = [torch.zeros_like(goal)] + [goal.new_tensor([math.radians(v) for v in w[1]]) for w in wps]
+    out = qs[-1].expand(t.shape[0], -1).clone()
+    for i in range(len(wps) - 1, -1, -1):
+        x = ((t - ts[i]) / (ts[i + 1] - ts[i])).clamp(0.0, 1.0)[:, None]
+        seg = qs[i] + x * x * (3.0 - 2.0 * x) * (qs[i + 1] - qs[i])
+        out = torch.where((t < ts[i + 1])[:, None], seg, out)
+    return out
+
+
+def raise_extra_obs(env, t: torch.Tensor) -> torch.Tensor:
+    """Velocity mode: phase t / raise_nominal_s and the reference-path error (8 joints, rad)."""
+    c = env.cfg if hasattr(env, "cfg") and hasattr(env.cfg, "raise_waypoints") else env._rc
+    goal = torch.tensor(getattr(c, "raise_goal_q", None) or c.start_arm_q, device=env.device)
+    ref = raise_nominal(c, t, goal)
+    q = env.robot.data.joint_pos[:, list(env.arm_ids)]
+    return torch.cat(((t / c.raise_nominal_s).clamp(0.0, 1.25)[:, None], (ref - q).clamp(-3.0, 3.0)), dim=-1)
+
+
+def raise_velocity_step(env, filtered: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """Velocity mode: integrate the filtered actions as joint velocity
+    commands (raise_vel_rad_s per joint) from the hanging pose, then the
+    target low-pass. Returns the 8 arm + RotationBody targets."""
+    c = env.cfg if hasattr(env.cfg, "raise_vel_rad_s") else env._rc
+    arm = list(env.arm_ids)
+    fresh = (t < 0.5 * env.step_dt)[:, None]
+    if not hasattr(env, "_raise_cmd"):
+        env._raise_cmd = torch.zeros((env.num_envs, 8), device=env.device)
+        env._raise_smooth = torch.zeros((env.num_envs, 8), device=env.device)
+    vel = torch.tensor(c.raise_vel_rad_s, device=env.device)
+    cmd = torch.where(fresh, 0.0, env._raise_cmd) + vel * env.step_dt * filtered[:, :8]
+    env._raise_cmd = torch.minimum(torch.maximum(cmd, env.lower[arm]), env.upper[arm])
+    b = c.raise_target_smooth
+    env._raise_smooth = b * torch.where(fresh, 0.0, env._raise_smooth) + (1.0 - b) * env._raise_cmd
+    return env._raise_smooth
+
+
+@configclass
+class JaxV2ArmRaiseEnvCfg(JaxV2FrontPregraspEnvCfg):
+    episode_length_s = 5.0
+    pre_hide_scripted_obs = False
+    # Same finger drives as v16 (kp 40 / kd 2).
+    robot_cfg = JaxV2FrontGraspLiftEnvCfg().robot_cfg
+    raise_delta_rad = 0.02       # per step (60 Hz) at action 1: 1.2 rad/s
+    # v17_raise model_249 (delta control): mean pose error stayed 40-55 deg;
+    # integrating random deltas never covered RotationBody's 155 deg or the
+    # elbow's 90. Absolute targets around the goal instead (as the v12
+    # pre-grasp): target = start pose + raise_range_rad x action; at action 0
+    # the drives (1 rad/s limit) head straight to the L, and the policy has
+    # to learn the detour that clears the table.
+    raise_absolute = True
+    raise_range_rad = 1.0
+    # abs model_249 (deterministic chain render): the arm parked in a detour
+    # pose (shoulder pitch 42, elbow 105, wrist 58, RotationBody -98 deg;
+    # 58 deg from the L) and never came back. Scripted nominal path + learned
+    # residual: target(t) = hanging + smoothstep(t / raise_nominal_s) x (L -
+    # hanging) + raise_residual_rad x sin(pi s) x action. The residual is 0 at
+    # the start and the end, so the arm leaves the hanging pose and arrives
+    # at the L by construction; the policy learns the detour around the table.
+    raise_mode = "residual"
+    raise_nominal_s = 4.0
+    raise_residual_rad = 0.6
+    raise_residual_cost = 0.2    # per rad^2 of weighted residual (prefer the nominal path)
+    # res model_249 (deterministic chain): elbow stopped at 76.5 deg with the
+    # finger plates pressing the table edge (43 N) while the keep-out read 0:
+    # it tested link origins, and the plates reach >4 cm past them. The hand
+    # swings on a circle about the elbow that enters the table's x range
+    # below its top, so the wrist has to curl up mid-raise (more than the 0.6
+    # rad residual allowed). Keep-out now on sampled collision-mesh vertices
+    # of the hand and all six finger links; residual 1.2 rad; contact 2x.
+    raise_mesh_keepout = True
+    raise_plate_drop_m = 0.0
+    raise_residual_rad = 1.2
+    raise_contact_scale = 1.0
+    # User: no motion may change abruptly. mesh model_499 in the chain: the
+    # largest step-to-step velocity change of the whole chain (127 deg/s per
+    # step) was the forearm roll in the raise, a residual the table detour
+    # does not need. Residual only on shoulder pitch, elbow, wrist pitch and
+    # RotationBody (others follow the nominal path), and the raise targets
+    # pass the same low-pass as the pre-grasp (raise_target_smooth).
+    raise_residual_joints = (0, 3, 5, 7)
+    raise_target_smooth = 0.85
+    # smooth model_499 (4 residual joints): could not clear the table (125 N,
+    # handover by timeout 17 deg off); mesh model_499 had used the forearm roll
+    # for the detour. All 8 joints again, smoothing kept.
+    raise_residual_joints = (0, 1, 2, 3, 4, 5, 6, 7)
+    raise_thumb_ramp_s = (1.0, 3.0)
+    # Keep-out over the table: hand points with x below table edge + margin
+    # and z below table top + clearance (finger plates hang ~4.5 cm below
+    # their link origins).
+    raise_table_edge_x = -0.34
+    raise_edge_margin_m = 0.03
+    raise_clear_m = 0.02
+    raise_plate_drop_m = 0.045
+    raise_keepout_scale = 30.0
+    raise_contact_scale = 0.5    # per N of finger force on anything
+    raise_body_scale = 5.0
+    raise_cube_scale = 20.0
+    raise_pose_lin_rad = 1.6
+    raise_pose_sharp_rad = 0.05
+    raise_lin_scale = 2.0
+    raise_sharp_scale = 3.0
+    raise_settle_err_rad = math.radians(1.5)
+    raise_settle_speed = 0.03
+    raise_settle_scale = 3.0
+    raise_vel_scale = 0.01
+    raise_rate_scale = 0.01
+
+
+class JaxV2ArmRaiseEnv(JaxV2FrontPregraspEnv):
+    cfg: JaxV2ArmRaiseEnvCfg
+
+    def _raise_goal(self) -> torch.Tensor:
+        return torch.tensor(getattr(self.cfg, "raise_goal_q", None) or self.cfg.start_arm_q, device=self.device)
+
+    def _reset_idx(self, env_ids: torch.Tensor | None):
+        super()._reset_idx(env_ids)
+        ids = self.robot._ALL_INDICES if env_ids is None else env_ids
+        q = self.robot.data.joint_pos[ids].clone()
+        q[:, list(self.arm_ids)] = 0.0
+        q[:, self.finger_ids] = 0.0
+        targets = self.targets[ids]
+        targets[:, list(self.arm_ids)] = 0.0
+        targets[:, self.finger_ids] = 0.0
+        p = getattr(self.cfg, "raise_rsi_prob", 0.0)
+        if p > 0.0:
+            # Reference state initialization: start a fraction of episodes at
+            # a random point of the reference path, at rest, with the episode
+            # clock and the velocity integrator at that point.
+            arm = list(self.arm_ids)
+            t0 = torch.rand(len(ids), device=self.device) * self.cfg.raise_nominal_s
+            t0 = torch.where(torch.rand(len(ids), device=self.device) < p, t0, 0.0)
+            t0 = (t0 / self.step_dt).floor() * self.step_dt
+            ref = raise_nominal(self.cfg, t0, self._raise_goal())
+            q[:, arm] = ref
+            tt0, tt1 = self.cfg.raise_thumb_ramp_s
+            x = ((t0 - tt0) / (tt1 - tt0)).clamp(0.0, 1.0)
+            q[:, self.finger_ids[2]] = x * x * (3.0 - 2.0 * x) * math.radians(self.cfg.hand_shape_deg[2])
+            targets[:, arm] = ref
+            targets[:, self.finger_ids[2]] = q[:, self.finger_ids[2]]
+            self.episode_length_buf[ids] = (t0 / self.step_dt).round().long()
+            if not hasattr(self, "_raise_cmd"):
+                self._raise_cmd = torch.zeros((self.num_envs, 8), device=self.device)
+                self._raise_smooth = torch.zeros((self.num_envs, 8), device=self.device)
+            self._raise_cmd[ids] = ref
+            self._raise_smooth[ids] = ref
+        self.targets[ids] = targets
+        self.robot.write_joint_state_to_sim(q, torch.zeros_like(q), env_ids=ids)
+        self.robot.set_joint_position_target(targets, env_ids=ids)
+
+    def raise_targets(self, filtered: torch.Tensor, t: torch.Tensor):
+        """Arm + RotationBody delta step and the scripted thumb ramp (also used by the render chain)."""
+        arm = list(self.arm_ids)
+        if getattr(self.cfg, "raise_mode", "") == "residual":
+            x = (t / self.cfg.raise_nominal_s).clamp(0.0, 1.0)[:, None]
+            nom = raise_nominal(self.cfg, t, self._raise_goal())
+            mask = torch.zeros(8, device=self.device)
+            mask[list(getattr(self.cfg, "raise_residual_joints", range(8)))] = 1.0
+            self._raise_res = self.cfg.raise_residual_rad * torch.sin(math.pi * x) * filtered[:, :8] * mask
+            tgt = nom + self._raise_res
+            if getattr(self.cfg, "raise_target_smooth", 0.0):
+                b = self.cfg.raise_target_smooth
+                fresh = (t < 0.5 * self.step_dt)[:, None]
+                prev = torch.where(fresh, torch.zeros_like(tgt), getattr(self, "_raise_smooth", torch.zeros_like(tgt)))
+                new = b * prev + (1.0 - b) * tgt
+                if getattr(self.cfg, "raise_rate_rad_s", 0.0):
+                    # arm joints only; RotationBody (hand servo) turns 170 deg
+                    step = self.cfg.raise_rate_rad_s * self.step_dt
+                    new = torch.cat([prev[:, :7] + (new[:, :7] - prev[:, :7]).clamp(-step, step), new[:, 7:]], dim=1)
+                self._raise_smooth = new
+                tgt = self._raise_smooth
+        elif getattr(self.cfg, "raise_mode", "") == "velocity":
+            tgt = raise_velocity_step(self, filtered, t)
+        elif self.cfg.raise_absolute:
+            tgt = self._raise_goal() + self.cfg.raise_range_rad * filtered[:, :8]
+        else:
+            tgt = self.targets[:, arm] + self.cfg.raise_delta_rad * filtered[:, :8]
+        self.targets[:, arm] = torch.minimum(torch.maximum(tgt, self.lower[arm]), self.upper[arm])
+        t0, t1 = self.cfg.raise_thumb_ramp_s
+        x = ((t - t0) / (t1 - t0)).clamp(0.0, 1.0)
+        w = x * x * (3.0 - 2.0 * x)
+        fingers = torch.zeros((self.num_envs, len(self.finger_ids)), device=self.device)
+        fingers[:, 2] = w * math.radians(self.cfg.hand_shape_deg[2])
+        self.targets[:, self.finger_ids] = fingers
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+        alpha = self.cfg.action_filter_alpha
+        self._filtered_actions = alpha * actions.clamp(-1.0, 1.0) + (1.0 - alpha) * self._filtered_actions
+        self.previous_actions.copy_(self.actions)
+        self.actions = self._filtered_actions.clone()
+        self.raise_targets(self.actions, self.episode_length_buf * self.step_dt)
+
+    def _hand_mesh_points(self) -> torch.Tensor:
+        """Env-frame positions (N, P, 3) of sampled collision-mesh vertices of the hand and fingers."""
+        if not hasattr(self, "_hm_pts"):
+            d = os.path.join(os.path.dirname(__file__), "../../../../isaaclab_assets/data/Robots/JaxV2Assembly1006")
+            root = ET.parse(os.path.join(d, "urdf/JAXV2_Assembly.urdf")).getroot()
+            want = ("MG996R", "RotationBody", "Finger_1_1", "Finger_2_1", "Finger_3_1", "Finger_1_2", "Finger_2_2", "Finger_3_2")
+            ids, pts = [], []
+            for link in root.findall("link"):
+                name = link.get("name")
+                col = link.find("collision")
+                if name not in want or col is None:
+                    continue
+                mesh = col.find("geometry/mesh"); org = col.find("origin")
+                fn = mesh.get("filename").split("://")[-1]
+                for cand in (fn, os.path.join(d, "urdf", fn), os.path.join(d, "meshes", os.path.basename(fn))):
+                    if os.path.exists(cand):
+                        fn = cand
+                        break
+                raw = open(fn, "rb").read(); n = struct.unpack("<I", raw[80:84])[0]
+                v = torch.frombuffer(bytearray(raw[84:84 + n * 50]), dtype=torch.uint8).view(n, 50)[:, 12:48]
+                v = v.contiguous().view(torch.float32).view(-1, 3).double()
+                v = v * torch.tensor([float(x) for x in mesh.get("scale", "1 1 1").split()], dtype=torch.float64)
+                r, pi, y = [float(x) for x in (org.get("rpy") if org is not None else "0 0 0").split()]
+                cr, sr, cp, sp, cy, sy = math.cos(r), math.sin(r), math.cos(pi), math.sin(pi), math.cos(y), math.sin(y)
+                R = torch.tensor([[cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr], [sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr], [-sp, cp*sr, cp*cr]], dtype=torch.float64)
+                xyz = org.get("xyz") if org is not None else "0 0 0"
+                v = torch.unique(v @ R.T + torch.tensor([float(x) for x in xyz.split()], dtype=torch.float64), dim=0)
+                keep = v[torch.linspace(0, len(v) - 1, min(128, len(v))).long()].float()
+                ids += [self.robot.body_names.index(name)] * len(keep); pts.append(keep)
+            self._hm_ids = torch.tensor(ids, device=self.device)
+            self._hm_pts = torch.cat(pts).to(self.device)
+        q = self.robot.data.body_quat_w[:, self._hm_ids]
+        p = self.robot.data.body_pos_w[:, self._hm_ids] - self.scene.env_origins[:, None]
+        n, m = q.shape[:2]
+        return p + quat_apply(q.reshape(-1, 4), self._hm_pts[None].expand(n, -1, -1).reshape(-1, 3)).view(n, m, 3)
+
+    def raise_keepout(self) -> torch.Tensor:
+        """Depth (m) of the deepest hand point inside the box over the table."""
+        c = self.cfg
+        if getattr(c, "raise_mesh_keepout", False):
+            p = self._hand_mesh_points()
+        else:
+            ids = [self._hand_id] + self.proximal_ids + list(self.fingertip_ids)
+            p = self.robot.data.body_pos_w[:, ids] - self.scene.env_origins[:, None]
+        x_in = (c.raise_table_edge_x + c.raise_edge_margin_m) - p[..., 0]
+        z_in = (c.table_top_z + c.raise_clear_m + c.raise_plate_drop_m) - p[..., 2]
+        return torch.minimum(x_in, z_in).clamp_min(0.0).amax(dim=1)
+
+    def _get_observations(self):
+        obs = super()._get_observations()
+        if getattr(self.cfg, "raise_mode", "") == "velocity":
+            obs["policy"] = torch.cat((obs["policy"], raise_extra_obs(self, self.episode_length_buf * self.step_dt)), dim=-1)
+        return obs
+
+    def raise_errors(self):
+        arm = list(self.arm_ids)
+        err = (self.robot.data.joint_pos[:, arm] - self._raise_goal()).abs()
+        speed = self.robot.data.joint_vel[:, arm].abs().amax(dim=1)
+        return err, speed
+
+    def _get_rewards(self):
+        c = self.cfg
+        cube = self.object.data.root_pos_w
+        self._cube_start = torch.where(self._cube_start_valid[:, None], self._cube_start, cube)
+        self._cube_start_quat = torch.where(self._cube_start_valid[:, None], self._cube_start_quat, self.object.data.root_quat_w)
+        self._cube_start_valid[:] = True
+        err, speed = self.raise_errors()
+        mean_err = err.mean(dim=1)
+        if getattr(c, "raise_mode", "") == "velocity":
+            # pose terms follow the reference path (which ends at the goal)
+            ref = raise_nominal(c, self.episode_length_buf * self.step_dt, self._raise_goal())
+            mean_err = (self.robot.data.joint_pos[:, list(self.arm_ids)] - ref).abs().mean(dim=1)
+        settled = (err.amax(dim=1) < c.raise_settle_err_rad) & (speed < c.raise_settle_speed)
+        keepout = self.raise_keepout()
+        names = [f"proximal_{i}" for i in (1, 2, 3)] + [f"finger_{i}" for i in (1, 2, 3)]
+        contact = torch.stack(
+            [torch.linalg.vector_norm(self.scene.sensors[n].data.net_forces_w[:, 0], dim=-1) for n in names], dim=1
+        ).sum(dim=1).clamp(max=20.0)
+        terms = {
+            "lin": c.raise_lin_scale * (1.0 - mean_err / c.raise_pose_lin_rad).clamp(0.0, 1.0),
+            "sharp": c.raise_sharp_scale * torch.exp(-mean_err / c.raise_pose_sharp_rad),
+            "settle": c.raise_settle_scale * settled.float(),
+            "keepout": -c.raise_keepout_scale * keepout,
+            "contact": -c.raise_contact_scale * contact,
+            "body": -c.raise_body_scale * self._body_intrusion,
+            "cube": -c.raise_cube_scale * self._cube_shift,
+            "vel": -c.raise_vel_scale * self.robot.data.joint_vel[:, list(self.arm_ids)].square().sum(dim=1),
+            "residual": -c.raise_residual_cost * (self._raise_res.square().sum(dim=1) if hasattr(self, "_raise_res") else 0.0 * mean_err),
+            "rate": -c.raise_rate_scale * (self.actions[:, :8] - self.previous_actions[:, :8]).square().sum(dim=1),
+        }
+        reward = sum(terms.values())
+        self.extras["log"] = {f"r_{k}": v.mean() for k, v in terms.items()}
+        self.extras["log"].update({
+            "raise_err_max_deg": torch.rad2deg(err.amax(dim=1)).mean(),
+            "raise_err_mean_deg": torch.rad2deg(mean_err).mean(),
+            "raise_settled": settled.float().mean(),
+            "raise_keepout_mm": 1000.0 * keepout.mean(),
+            "raise_keepout_any": (keepout > 0).float().mean(),
+            "raise_contact_n": contact.mean(),
+            "raise_body_mm": 1000.0 * self._body_intrusion.mean(),
+            "raise_cube_shift_mm": 1000.0 * self._cube_shift.mean(),
+        })
+        return reward
+
+
+@configclass
+class JaxV2RaiseToPregraspEnvCfg(JaxV2ArmRaiseEnvCfg):
+    """v18: hanging straight up into the pre-grasp pose, no L.
+
+    User (2026-10-29): the arm came down hard from the L into the pre-grasp
+    ("would break a real robot"); rise to the grasp height instead of
+    lowering into it. The goal is the rate07 pre-grasp end pose (chain,
+    all envs alike); the elbow ends at 73.7 deg, below the L's 90, so the arm
+    only rises. The hand must come up in front of the table edge and move in
+    over the table above its top, so the keep-out is the table itself (5 mm
+    clearance on the hand mesh) rather than the box over it. Slow nominal path
+    (6 s) and arm targets capped at 0.5 rad/s; then v16 starts at its close.
+    """
+
+    episode_length_s = 9.0
+    raise_goal_q = tuple(math.radians(v) for v in (-7.3, 0.0, 2.5, 73.7, -5.6, 14.7, -6.6, -170.1))
+    raise_nominal_s = 6.0
+    raise_rate_rad_s = 0.5
+    raise_thumb_ramp_s = (1.0, 4.0)
+    raise_edge_margin_m = 0.0
+    raise_clear_m = 0.005
+    raise_plate_drop_m = 0.0
+    # v18_raise model_499 (one smoothstep, hanging -> pre-grasp): the joint-
+    # space line runs into the table front from 3.5 s on, where the residual
+    # envelope sin(pi s) shrinks to 0; the hand stuck below the edge (elbow 66
+    # vs 73.7). Two segments instead (v18_line_probe, offline): up into a pose
+    # at grasp height with the hand mesh 3.4 cm in front of the table edge
+    # (hand 10 cm back, same height and pitch), then in straight at that
+    # height through poses every 2 cm. The pre-grasp hand mesh is 2 mm over
+    # the top, so the keep-out clearance is 0.
+    raise_waypoints = (
+        (5.0, (-28.8, 0.0, 2.5, 89.1, -5.6, 20.8, -6.6, -170.1)),
+        (5.5, (-24.9, 0.0, 2.5, 87.9, -5.6, 18.0, -6.6, -170.1)),
+        (6.0, (-20.8, 0.0, 2.5, 86.2, -5.6, 15.7, -6.6, -170.1)),
+        (6.5, (-16.7, 0.0, 2.5, 84.1, -5.6, 13.7, -6.6, -170.1)),
+        (7.0, (-12.6, 0.0, 2.5, 81.5, -5.6, 12.2, -6.6, -170.1)),
+        (7.5, (-8.3, 0.0, 2.5, 78.4, -5.6, 11.1, -6.6, -170.1)),
+        (8.1, (-7.3, 0.0, 2.5, 73.7, -5.6, 14.7, -6.6, -170.1)),
+    )
+    # v18 two-segment probe: finger 2's plate caught the table's front edge
+    # (84 N) at 6.4 s; gravity holds the arm ~2 deg low (as at the L), so the
+    # mesh ran below the planned 2 mm. The line in is now 1.2 cm higher, the
+    # hand settles the last 1.2 cm over 0.6 s, and every waypoint carries the
+    # L sag compensation (shoulder +1.9, elbow +2.1, wrist pitch +0.7, wrist
+    # yaw -0.2 deg), so the render passes --raise_sag_comp_deg 0.
+    raise_sag_comp_deg = (1.9, 0.0, 0.0, 2.1, 0.0, 0.7, -0.2, 0.0)
+    raise_waypoints = _add_deg(raise_waypoints, raise_sag_comp_deg)
+    raise_nominal_s = 8.1
+    episode_length_s = 10.0
+    raise_clear_m = 0.0
+
+
+V18_WAYPOINTS = (
+    (5.0, (-28.8, 0.0, 2.5, 89.1, -5.6, 20.8, -6.6, -170.1)),
+    (5.5, (-24.9, 0.0, 2.5, 87.9, -5.6, 18.0, -6.6, -170.1)),
+    (6.0, (-20.8, 0.0, 2.5, 86.2, -5.6, 15.7, -6.6, -170.1)),
+    (6.5, (-16.7, 0.0, 2.5, 84.1, -5.6, 13.7, -6.6, -170.1)),
+    (7.0, (-12.6, 0.0, 2.5, 81.5, -5.6, 12.2, -6.6, -170.1)),
+    (7.5, (-8.3, 0.0, 2.5, 78.4, -5.6, 11.1, -6.6, -170.1)),
+    (8.1, (-7.3, 0.0, 2.5, 73.7, -5.6, 14.7, -6.6, -170.1)),
+)
+
+
+@configclass
+class JaxV2RaiseLearnedEnvCfg(JaxV2RaiseToPregraspEnvCfg):
+    """v19: the hanging -> pre-grasp raise as a learned policy.
+
+    User (2026-10-29): keep the cube where it is and learn the arm raise,
+    following the v18 script, then join the grasp. The policy commands joint
+    velocities (raise_vel_rad_s; integrated from the hanging pose, then the
+    target low-pass), so the drives never see a target jump. The pose terms
+    reward following the v18 path; its waypoints here are the plain geometric
+    poses (no sag compensation; the policy holds against gravity itself).
+    Observation: the 43-dim v9 observation + phase + reference-path error (8).
+    The thumb ramp to -30 deg stays scripted (fingers otherwise at 0).
+    """
+
+    raise_mode = "velocity"
+    observation_space = 52
+    raise_vel_rad_s = (0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1.0)
+    raise_waypoints = V18_WAYPOINTS
+    raise_sag_comp_deg = (0.0,) * 8
+    raise_residual_cost = 0.0
+    raise_pose_sharp_rad = 0.03
+    raise_settle_err_rad = math.radians(1.0)
+    # v19_raise model_400: never learned the path (episode-mean goal error
+    # 25 deg vs 35 deg left hanging; the deterministic chain wandered to
+    # shoulder yaw -89, elbow -100 deg). Every episode started hanging, so
+    # the later path was rarely seen. Reference state initialization (80% of
+    # episodes start at a random path time) and a wider tracking kernel.
+    raise_rsi_prob = 0.8
+    raise_pose_sharp_rad = 0.1
+
