@@ -79,6 +79,8 @@
 | `13100` | 넓힌 범위 9곳 | 앞뒤 −14 cm 줄은 전부 성공. **(+2, −10)은 0/16** (들어올리기 중 손가락이 큐브를 쳐서 36 mm 밀어냄) | `logs/.../2026-11-05_14-49-48_v49c_r1/videos/montage_v27_front_model_13100_v49c_wide.mp4` |
 | `13100` | 좌우 +10 cm 줄 | **3곳 모두 0/16** (들어올리기 중 87–122 N으로 큐브를 침) | `…/montage_v27_front_model_13100_v49c_y10.mp4` |
 | **`13075`** | 원래 범위 9곳 | **144/144** | `logs/.../2026-11-05_16-20-11_v50_r3/videos/montage_v27_front_model_13075_v50_deploy.mp4` (deploy 폴더 `video/chain_13075_nominal.mp4`에도 있음) |
+| `13075` | 원래 범위 9곳, 행동 지연 67 ms | **142/144** (x +2, y +6 cm에서만 14/16) | deploy 폴더 `video/chain_13075_delay67ms.mp4` |
+| `13075` | 원래 범위 9곳, 행동 지연 33 ms | **144/144** | deploy 폴더 `video/chain_13075_delay33ms.mp4` |
 
 ---
 
