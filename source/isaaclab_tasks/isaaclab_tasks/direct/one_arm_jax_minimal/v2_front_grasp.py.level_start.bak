@@ -1,0 +1,76 @@
+"""v11: frontal cup grasp from the L pose.
+
+Each episode starts in the L pose (upper arm vertical, forearm horizontal toward
+the table, shoulder yaw -30 deg so the fingers are at the cube's y) instead of
+hanging, already in the grasp phase. The face assignment is the v8/v9 one
+(fingers 1/2 on the +y side face, thumb on the -y side face, scored by the v9
+rewards); what changes is the approach: near the cube the hand must point
+forward (-x, away from the robot) and level, as when reaching for a cup, not
+down onto the cube. With the hand level the fingers bend in a horizontal plane,
+so their pads, not their sides, meet the side face.
+"""
+
+from __future__ import annotations
+
+import math
+
+import torch
+
+from isaaclab.utils import configclass
+
+from .v2_pad_sensor_grasp import JaxV2PadSensorGraspEnv, JaxV2PadSensorGraspEnvCfg
+
+
+@configclass
+class JaxV2FrontGraspEnvCfg(JaxV2PadSensorGraspEnvCfg):
+    # Arm joints in arm_ids order (8, RotationBody last). From the L pose
+    # (0, 0, -30, 90, 0, 0, 0) the v9 policy went back to its top-down pose.
+    # Start instead at the IK level pose: hand pointing -x and level (dir z
+    # -0.07) at cube height, finger second links 4 cm outside the +y face.
+    start_arm_q = tuple(math.radians(v) for v in (23.1, 0.0, -76.8, 33.1, -82.5, 58.7, -33.3, 0.0))
+    # near_only (0.1, near the cube) model_10346 went straight back to the
+    # v9 top-down pose (hand 37 deg down, front quality 0.07). Pay level and
+    # forward throughout the grasp phase and penalize a hand tilted down.
+    front_scale = 0.5
+    front_down_limit = -0.3
+    front_down_scale = 1.0
+    # The hand direction (MG996R -> finger second links) counts as level up
+    # to this vertical component.
+    front_level_tolerance = 0.5
+
+
+class JaxV2FrontGraspEnv(JaxV2PadSensorGraspEnv):
+    cfg: JaxV2FrontGraspEnvCfg
+
+    def _reset_idx(self, env_ids: torch.Tensor | None):
+        super()._reset_idx(env_ids)
+        ids = self.robot._ALL_INDICES if env_ids is None else env_ids
+        q = self.robot.data.default_joint_pos[ids].clone()
+        q[:, self.arm_ids] = torch.tensor(self.cfg.start_arm_q, device=self.device)
+        q[:, self.finger_ids] = 0.0
+        q = torch.minimum(torch.maximum(q, self.lower), self.upper)
+        self.targets[ids] = q
+        self.robot.write_joint_state_to_sim(q, torch.zeros_like(q), env_ids=ids)
+        self.robot.set_joint_position_target(q, env_ids=ids)
+        # Start in the grasp phase: the lift-stage action projections and
+        # rewards (phases 0/1) assume the hanging start.
+        self.reward_phase[ids] = 2
+
+    def _get_rewards(self):
+        reward = super()._get_rewards()
+        hand = self.robot.data.body_pos_w[:, self._hand_id]
+        tips = self.robot.data.body_pos_w[:, self.fingertip_ids]
+        d = tips[:, :2].mean(dim=1) - hand
+        d = d / torch.linalg.vector_norm(d, dim=1, keepdim=True).clamp_min(1e-6)
+        forward = (-d[:, 0]).clamp(0.0, 1.0)
+        level = (1.0 - d[:, 2].abs() / self.cfg.front_level_tolerance).clamp(0.0, 1.0)
+        cube = self.object.data.root_pos_w
+        near = torch.linalg.vector_norm(tips.mean(dim=1) - cube, dim=1) < self.cfg.straddle_near_distance_m
+        front_quality = forward * level
+        down = (self.cfg.front_down_limit - d[:, 2]).clamp_min(0.0)
+        front_reward = self.cfg.front_scale * front_quality * (self.reward_phase == 2) - self.cfg.front_down_scale * down
+        self.extras["log"]["front_quality"] = front_quality.mean()
+        self.extras["log"]["front_reward"] = front_reward.mean()
+        self.extras["log"]["front_near"] = near.float().mean()
+        self.extras["log"]["hand_dir_z"] = d[:, 2].mean()
+        return reward + front_reward

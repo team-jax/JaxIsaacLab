@@ -1,0 +1,120 @@
+"""v11: frontal cup grasp from the L pose.
+
+Each episode starts in the L pose (upper arm vertical, forearm horizontal toward
+the table, shoulder yaw -30 deg so the fingers are at the cube's y) instead of
+hanging, already in the grasp phase. The face assignment is the v8/v9 one
+(fingers 1/2 on the +y side face, thumb on the -y side face, scored by the v9
+rewards); what changes is the approach: near the cube the hand must point
+forward (-x, away from the robot) and level, as when reaching for a cup, not
+down onto the cube. With the hand level the fingers bend in a horizontal plane,
+so their pads, not their sides, meet the side face.
+"""
+
+from __future__ import annotations
+
+import math
+
+import torch
+
+from isaaclab.utils import configclass
+
+from .v2_pad_sensor_grasp import JaxV2PadSensorGraspEnv, JaxV2PadSensorGraspEnvCfg
+
+
+@configclass
+class JaxV2FrontGraspEnvCfg(JaxV2PadSensorGraspEnvCfg):
+    # Arm joints in arm_ids order (8, RotationBody last). From the L pose
+    # (0, 0, -30, 90, 0, 0, 0) the v9 policy went back to its top-down pose.
+    # Start instead at the IK level pose: hand pointing -x and level (dir z
+    # -0.07) at cube height, finger second links 4 cm outside the +y face.
+    # The level start (23.1, 0, -76.8, 33.1, -82.5, 58.7, -33.3) touched the
+    # cube at reset (episodes ~2 s). Sequence asked for: raise to the L pose,
+    # preshape the hand, then approach and grasp. RotationBody stays with the
+    # policy from its reset value (an earlier version held it at -45 deg).
+    start_arm_q = (0.0, 0.0, math.radians(-30.0), math.pi / 2, 0.0, 0.0, 0.0, 0.0)
+    # Only the thumb's palm-side joint is preset: folded +90 deg and held. Its
+    # second joint is for the actual grasp: the thumb action drives it 0..90
+    # deg (finger_close[5]); fingers 1/2 still close with their first joints.
+    thumb_fold_rad = math.pi / 2
+    finger_close = (1.5708, 1.5708, 1.5708, 0.0, 0.0, 1.5708)
+    # near_only (0.1, near the cube) model_10346 went straight back to the
+    # v9 top-down pose (hand 37 deg down, front quality 0.07). Pay level and
+    # forward throughout the grasp phase and penalize a hand tilted down.
+    # lthumb90_fresh model_499 held the L pose with the hand level and never
+    # went down to the cube: front paid 0.2/step anywhere. Pay it near the
+    # cube only, and pay for placing fingers 1/2 just outside the +y face and
+    # the folded thumb just outside the -y face.
+    front_scale = 0.2
+    approach_scale = 0.3
+    approach_face_gap_m = 0.015
+    approach_length_m = 0.05
+    front_down_limit = -0.3
+    front_down_scale = 0.5
+    # The hand direction (MG996R -> finger second links) counts as level up
+    # to this vertical component.
+    front_level_tolerance = 0.5
+
+
+class JaxV2FrontGraspEnv(JaxV2PadSensorGraspEnv):
+    cfg: JaxV2FrontGraspEnvCfg
+
+    def pad_forces(self) -> torch.Tensor:
+        """v9 pad forces, with the folded thumb's links using contact force magnitude (back contact)."""
+        pad = super().pad_forces()
+        thumb = torch.stack([
+            torch.linalg.vector_norm(self.scene.sensors[n].data.force_matrix_w[:, 0, 0], dim=-1)
+            for n in ("proximal_3", "finger_3")
+        ], dim=1)
+        pad[:, 2] = thumb[:, 0]
+        pad[:, 5] = thumb[:, 1]
+        return pad
+
+    def _hold_hand_shape(self):
+        self.targets[:, self.finger_ids[2]] = self.cfg.thumb_fold_rad
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+        super()._pre_physics_step(actions)
+        self._hold_hand_shape()
+
+    def _reset_idx(self, env_ids: torch.Tensor | None):
+        super()._reset_idx(env_ids)
+        ids = self.robot._ALL_INDICES if env_ids is None else env_ids
+        q = self.robot.data.default_joint_pos[ids].clone()
+        q[:, self.arm_ids] = torch.tensor(self.cfg.start_arm_q, device=self.device)
+        q[:, self.finger_ids] = 0.0
+        q[:, self.finger_ids[2]] = self.cfg.thumb_fold_rad
+        q = torch.minimum(torch.maximum(q, self.lower), self.upper)
+        self.targets[ids] = q
+        self.robot.write_joint_state_to_sim(q, torch.zeros_like(q), env_ids=ids)
+        self.robot.set_joint_position_target(q, env_ids=ids)
+        # Start in the grasp phase: the lift-stage action projections and
+        # rewards (phases 0/1) assume the hanging start.
+        self.reward_phase[ids] = 2
+
+    def _get_rewards(self):
+        reward = super()._get_rewards()
+        hand = self.robot.data.body_pos_w[:, self._hand_id]
+        tips = self.robot.data.body_pos_w[:, self.fingertip_ids]
+        d = tips[:, :2].mean(dim=1) - hand
+        d = d / torch.linalg.vector_norm(d, dim=1, keepdim=True).clamp_min(1e-6)
+        forward = (-d[:, 0]).clamp(0.0, 1.0)
+        level = (1.0 - d[:, 2].abs() / self.cfg.front_level_tolerance).clamp(0.0, 1.0)
+        cube = self.object.data.root_pos_w
+        near = torch.linalg.vector_norm(tips.mean(dim=1) - cube, dim=1) < self.cfg.straddle_near_distance_m
+        front_quality = forward * level
+        down = (self.cfg.front_down_limit - d[:, 2]).clamp_min(0.0)
+        front_reward = self.cfg.front_scale * front_quality * near - self.cfg.front_down_scale * down
+        side = self.cfg.object_size[1] / 2 + self.cfg.approach_face_gap_m
+        offset = torch.zeros_like(cube)
+        offset[:, 1] = side
+        fingers_err = torch.linalg.vector_norm(tips[:, :2].mean(dim=1) - (cube + offset), dim=1)
+        thumb_err = torch.linalg.vector_norm(tips[:, 2] - (cube - offset), dim=1)
+        approach = torch.exp(-0.5 * (fingers_err + thumb_err) / self.cfg.approach_length_m)
+        front_reward = front_reward + self.cfg.approach_scale * approach
+        self.extras["log"]["approach_fingers_err_m"] = fingers_err.mean()
+        self.extras["log"]["approach_thumb_err_m"] = thumb_err.mean()
+        self.extras["log"]["front_quality"] = front_quality.mean()
+        self.extras["log"]["front_reward"] = front_reward.mean()
+        self.extras["log"]["front_near"] = near.float().mean()
+        self.extras["log"]["hand_dir_z"] = d[:, 2].mean()
+        return reward + front_reward

@@ -1,0 +1,391 @@
+"""v12: from the L pose, reach the frontal pre-grasp pose and stop (no grasp).
+
+Same start and hand shape as v11 (L pose, thumb palm-side joint folded +90
+deg), but fingers 1/2 stay straight and the thumb's second joint stays at 0:
+the policy moves the arm only. Target: finger 1/2 second links just outside
+the cube's +y face at cube height, the folded thumb on the -y side, the hand
+level and pointing away from the robot, the cube untouched. None of the v8/v9
+grasp, hold or lift terms (or the auto lift) are used.
+"""
+
+from __future__ import annotations
+
+import math
+
+import torch
+
+import isaaclab.sim as sim_utils
+from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_apply
+
+from .v2_front_grasp import JaxV2FrontGraspEnv, JaxV2FrontGraspEnvCfg
+
+
+@configclass
+class JaxV2FrontPregraspEnvCfg(JaxV2FrontGraspEnvCfg):
+    # stage1_still model_996 swung the arm after 6 s in an 8 s video: it had
+    # never seen the hold past the 6 s episode. Train the hold for 12 s.
+    episode_length_s = 12.0
+    # User (2026-10-26): 4 cm cube (3D-printed filament). Mass ~25 g: PLA
+    # 1.24 g/cm^3, two 0.4 mm walls, four top/bottom layers, 20% infill
+    # (estimate until the real weight is measured). 5 cm runs: .cube5.bak.
+    # 2026-10-27: fingers 1/2 sit 36 mm apart one above the other; on a 4 cm
+    # cube finger 2 would have to be 2 mm over the table for both to press
+    # one face (distal_h model_2042: finger 1 above the cube). 5.5 cm cube
+    # (best in the size test), mass ~55 g by the same print estimate.
+    object_size = (0.055, 0.055, 0.055)
+    object_half_height = 0.0275
+    object_cfg = JaxV2FrontGraspEnvCfg().object_cfg.replace(
+        spawn=JaxV2FrontGraspEnvCfg().object_cfg.spawn.replace(
+            size=(0.055, 0.055, 0.055), mass_props=sim_utils.MassPropertiesCfg(mass=0.055)
+        )
+    )
+    auto_lift = False
+    # v7 held wrist_yaw_to_hand_base within +/-60 deg; the v11 policies sat at
+    # that limit while turning the hand. Use the URDF range.
+    wrist_yaw_limit_rad = (-2.09, 2.09)
+    # The motor nearest the palm is RotationBody (hand_base_to_rotation_base),
+    # not the thumb's first finger joint: fold it 90 deg toward the palm and
+    # keep the thumb's own joints at 0 (used later for the actual grasp).
+    # Cube moved from y 0.08 (inboard, where the wrist yaw and shoulder roll
+    # limits stopped the hand 3-8 cm short) to straight in front of the arm:
+    # the hanging arm and the L pose with shoulder yaw 0 put the hand at y
+    # ~0.26-0.28 (measured), so the L start uses yaw 0.
+    object_y = (0.26, 0.26)
+    start_arm_q = (0.0, 0.0, 0.0, math.pi / 2, 0.0, 0.0, 0.0, math.radians(-155.0))
+    # hand_scan (2026-10-23): with RotationBody -90 no hand shape puts the
+    # thumb opposite the finger pads. Shape A (picked from the shape video):
+    # RotationBody -157, thumb first joint -15 (slightly open), thumb second
+    # 0, fingers 1/2 first joints 15; thumb pad faces the finger pads.
+    # Shape A is the closed (holding) shape: thumb-finger gap ~ the cube. The
+    # pre-grasp opens it: fingers straight, thumb first joint -30, RotationBody
+    # -150 (same A family, hand_scan gap 67-80 mm), so closing later gives A.
+    # stage1_ep12 model_1245: the thumb pad was 31 deg off the cube face (thumb
+    # vs finger pads -0.75) and the hand yawed 13.7 deg. Use the hand_scan
+    # best-opposed open shape (RotationBody -165, thumb -30, fingers 15:
+    # -0.94, gap ~76 mm), pay the thumb pad for facing the cube and penalize
+    # hand yaw away from straight ahead (-x).
+    # The -165 / fingers 15 shape (square, square_noyaw) made the model_1245
+    # policy twist the hand to its yaw limit both with and without the yaw
+    # penalty; back to the shape it was trained with, thumb facing paid only.
+    hand_shape_deg = (0.0, 0.0, -30.0, 0.0, 0.0, 0.0)
+    # Stage 2 (hand_scan2, 2026-10-24): the thumb pad should meet the cube face
+    # square. With the thumb opposite the fingers and a gap that fits the
+    # cube, the best open shape is RotationBody -155, thumb -10, fingers 5
+    # (thumb pad 25 deg off square, gap 62 mm centre-line, offset 19 mm); the
+    # previous -150 / -30 / 0 was 41 deg off.
+    hand_shape_deg = (5.0, 5.0, -10.0, 0.0, 0.0, 0.0)
+    # thumb25 model_548: thumb -10 curled toward the palm and the hand touched
+    # the cube in 94% of steps right after the change. This stage is the
+    # pre-grasp only (no contact): open the thumb again; the square thumb is a
+    # grasp-stage concern.
+    hand_shape_deg = (0.0, 0.0, -30.0, 0.0, 0.0, 0.0)
+    pre_thumb_face_scale = 0.0
+    pre_yaw_free_rad = 0.087
+    # square model_1494: yaw measured from the hand to the (now curled)
+    # finger pads was lowered by twisting the hand (hand yaw joint to its
+    # 120 deg limit, pads facing down, cube pushed 4 cm). Off.
+    pre_yaw_scale = 0.0
+    # The shapeA policy kept turning its wrist: nothing cost motion and the
+    # success bonus was never reached. Penalize arm joint speed and pay for
+    # being still near the target.
+    # open_still model_249 sat at 4.8 cm (outside the 4 cm still radius) and
+    # kept turning its wrist; 0.01 x speed^2 was negligible.
+    # Stage 1 of 2 (stillness): cube_front_c3 model_747 still drifted (forearm
+    # roll 0 -> 23 deg, shoulder 3-5 deg in 8 s). Arm targets integrate the
+    # actions, so any non-zero mean action drifts: penalize the arm action
+    # itself and raise the speed penalty.
+    pre_vel_scale = 0.2
+    # Absolute arm targets (see _pre_physics_step): the action is now an
+    # offset from the L pose, so its size must not be penalized; penalize its
+    # change instead.
+    pre_action_scale = 0.0
+    pre_action_rate_scale = 0.05
+    # Delta targets (v1-v12 so far) integrate the action, so any non-zero mean
+    # drifts (thumbface model_1494: forearm roll +15, hand yaw -18 deg in 10 s
+    # even with action and speed penalties). Arm target = L pose + this x the
+    # filtered action, clamped to the joint limits.
+    arm_action_range_rad = 1.0
+    # pregrasp_open model_548 held still but kept commanding the arm lower than
+    # it was (elbow -6.6, hand yaw -25.5 deg, 44 N m) with the thumb side of the
+    # hand pressed on the table. Penalize target-minus-position error and hand
+    # links closer than 3 cm (link origin) to the table top.
+    pre_track_scale = 1.0
+    pre_table_clear_m = 0.03
+    # no_press model_797 dove at 2.5-2.9 s (hand links down 0.18 m/s, thumb
+    # link 26 mm over the table, elbow command 9 deg below) and then rose
+    # back over 2 s; 5 x 4 mm was negligible. Raise it and penalize hand-link
+    # descent speed while a link is within 6 cm of the table.
+    pre_table_scale = 30.0
+    pre_descent_zone_m = 0.06
+    # high_target model_1295 crept down for 7 s to the same final pose (finger
+    # 2 at 33 mm, needed to reach the cube's side): the descent-speed penalty
+    # paid for going slowly. Off; the table penalty alone stops the overshoot.
+    pre_descent_scale = 0.0
+    # cube_front model_249 kept bending the wrist up into an L (wrist pitch
+    # -17 -> -41 deg, hand yaw 11 -> 35 deg in 6 s). Penalize wrist pitch and
+    # hand yaw beyond +/-20 deg.
+    pre_wrist_free_rad = 0.35
+    pre_wrist_scale = 0.5
+    pre_still_err_m = 0.06
+    pre_still_speed_rad_s = 0.3
+    pre_still_scale = 0.3
+    # pregrasp model_1497 kept the hand level 9 cm above the target and never
+    # turned the finger pads toward the cube. Pay finger height and pads
+    # facing -y (fingers 1/2 on the right face as seen from the robot).
+    # rot90_height model_1746 swung the arm out: the target side was fixed
+    # (fingers +y only), the sharp position/height terms were ~1% at 9 cm,
+    # and hand-orientation terms could be earned anywhere. Either assignment
+    # (fingers on the +y or -y face, thumb opposite) now counts, position
+    # terms reach 10 cm, and orientation is paid near the target only.
+    pre_face_gap_m = 0.02
+    # User (2026-10-26): the grasp pulled the hand back 4 cm (close_shift_m,
+    # IK) before closing; aim the pre-grasp there from the start instead
+    # (+x = toward the robot) and drop the pull-back.
+    pre_target_dx_m = 0.04
+    # User: reach into the cube less (grip with the finger ends). dx6
+    # model_2042: on closing the thumb folded over the cube top and finger 2
+    # never reached; back to 4 cm.
+    pre_broad_m = 0.08
+    pre_broad_scale = 1.0
+    pre_sharp_m = 0.02
+    pre_sharp_scale = 1.0
+    # cube_front_wrist model_498 kept the wrist still but hovered 7 cm above
+    # the pad-centre height target; pay height more and from farther away.
+    pre_height_m = 0.08
+    # no_dive model_1046 sank the whole episode (hand 85 -> 47 mm over 10 s,
+    # then dove at 11 s): pad centres sat 3 cm above the cube-centre target,
+    # which the table penalties block. Aim pad centres 3 cm higher.
+    pre_height_offset_m = 0.03
+    # User (2026-10-27): fingers 1 and 2 (37 mm apart) should both press one
+    # face, but with pad centres 3 cm high finger 1 passed over the 4 cm cube.
+    # Height now = mean of the finger 1/2 second-link centres at the cube
+    # centre; link origins may come to 1 cm of the table.
+    # cube55_distal2 model_2540 diverged (err 19 cm) when the target dropped
+    # 3.4 cm at once; step it down from the old height 1 cm per cycle.
+    pre_height_offset_m = 0.00  # CURRICULUM
+    pre_height_distal = True
+    pre_distal_centre_m = 0.03
+    pre_table_clear_m = 0.008
+    # User (2026-10-27): keep the pre-grasp finger shape (straight) and close
+    # only the first joints. flat_scan2 (c55_h00 model_2789): the cube's +x
+    # face reached 7.5 mm past the second joint onto the first links (first-
+    # link force 3-9 N). Aim 1 cm farther back so the cube sits under the
+    # distal links.
+    pre_target_dx_m = 0.05
+    # rb_why_probe (model_3038): turning RotationBody -15 deg with the arm
+    # frozen touches nothing and keeps every reward term, but the policy
+    # lifted the hand 4.4 cm (elbow 61 -> 78 deg): the RotationBody joint
+    # (constant in training, obs std 0.03 -> ~4 sigma) and the thumb tip in
+    # the hand-midpoint obs moved. Holding the RotationBody obs stopped the
+    # lift. The policy does not command RotationBody or the fingers: observe
+    # RotationBody at its start value and the hand midpoint from fingers 1/2.
+    pre_hide_scripted_obs = True
+    # c55_hide model_3287: also dropping the thumb from the hand-midpoint obs
+    # shifted a trained input (success 95% -> 0%, contact 15%). Mask only the
+    # RotationBody joint (the probe that held it stopped the lift).
+    pre_hide_thumb_midpoint = False
+    pre_rotation_delta_deg = -15.0
+    pre_rotation_start_s = 3.5
+    pre_rotation_ramp_s = 1.0
+    pre_height_scale = 0.8
+    pre_orient_near_m = 0.08
+    pre_pad_scale = 0.2
+    pre_front_scale = 0.2
+    pre_down_limit = -0.15
+    pre_down_scale = 0.5
+    # symmetric_c3 model_524 rested finger 1's pad on the cube at 0.2-0.3 N,
+    # under the 0.5 N contact threshold, with the hand 17 deg down.
+    pre_contact_force_n = 0.05
+    # symmetric_fresh model_249 reached the cube but its pads pressed it
+    # (0.1-0.3 N, cube moved 9 mm in 6 s); a pre-grasp must not touch.
+    pre_contact_scale = 2.0
+    pre_cube_move_scale = 20.0
+    pre_body_scale = 2.0
+    pre_success_err_m = 0.03
+    pre_success_speed_rad_s = 0.2
+    pre_success_scale = 0.5
+
+
+class JaxV2FrontPregraspEnv(JaxV2FrontGraspEnv):
+    cfg: JaxV2FrontPregraspEnvCfg
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+        alpha = self.cfg.action_filter_alpha
+        self._filtered_actions = alpha * actions.clamp(-1.0, 1.0) + (1.0 - alpha) * self._filtered_actions
+        self.previous_actions.copy_(self.actions)
+        self.actions = self._filtered_actions.clone()
+        arm = self.arm_ids[:7]
+        base = self.targets.new_tensor(self.cfg.start_arm_q[:7])
+        target = base + self.cfg.arm_action_range_rad * self.actions[:, :7]
+        self.targets[:, arm] = torch.minimum(torch.maximum(target, self.lower[arm]), self.upper[arm])
+        self._hold_hand_shape()
+
+    def _hold_hand_shape(self):
+        self.targets[:, self.finger_ids] = self._hand_shape
+        rot = self.cfg.start_arm_q[7]
+        if self.cfg.pre_rotation_delta_deg:
+            t = self.episode_length_buf * self.step_dt - self.cfg.pre_rotation_start_s
+            ramp = (t / self.cfg.pre_rotation_ramp_s).clamp(0.0, 1.0)
+            rot = rot + ramp * math.radians(self.cfg.pre_rotation_delta_deg)
+        self.targets[:, self.arm_ids[7]] = rot
+
+    def _grasp_midpoint(self):
+        if not (self.cfg.pre_hide_scripted_obs and self.cfg.pre_hide_thumb_midpoint):
+            return super()._grasp_midpoint()
+        return self.robot.data.body_pos_w[:, self.fingertip_ids[:2]].mean(dim=1)
+
+    def _get_observations(self):
+        obs = super()._get_observations()
+        if self.cfg.pre_hide_scripted_obs:
+            i = self.arm_ids[7]; nj = self.robot.num_joints
+            lo, hi = self.lower[i], self.upper[i]
+            obs["policy"][:, i] = 2.0 * (self.cfg.start_arm_q[7] - lo) / (hi - lo).clamp_min(1e-5) - 1.0
+            obs["policy"][:, nj + i] = 0.0
+        return obs
+
+    def _reset_idx(self, env_ids: torch.Tensor | None):
+        super()._reset_idx(env_ids)
+        ids = self.robot._ALL_INDICES if env_ids is None else env_ids
+        q = self.robot.data.joint_pos[ids].clone()
+        if not hasattr(self, "_hand_shape"):
+            self._hand_shape = torch.tensor([math.radians(v) for v in self.cfg.hand_shape_deg], device=self.device)
+        q[:, self.finger_ids] = self._hand_shape
+        targets = self.targets[ids]
+        targets[:, self.finger_ids] = self._hand_shape
+        self.targets[ids] = targets
+        self.robot.write_joint_state_to_sim(q, torch.zeros_like(q), env_ids=ids)
+        self.robot.set_joint_position_target(targets, env_ids=ids)
+
+    def _get_dones(self):
+        self._body_intrusion = self._body_intrusion_depth()
+        self._cube_shift, self._cube_rotation_deg = self._cube_pose_change()
+        fallen = self.object.data.root_pos_w[:, 2] < self.cfg.table_top_z - 0.05
+        timeout = self.episode_length_buf >= self.max_episode_length - 1
+        return fallen, timeout
+
+    def _get_rewards(self):
+        cube = self.object.data.root_pos_w
+        self._cube_start = torch.where(self._cube_start_valid[:, None], self._cube_start, cube)
+        self._cube_start_quat = torch.where(
+            self._cube_start_valid[:, None], self._cube_start_quat, self.object.data.root_quat_w
+        )
+        self._cube_start_valid[:] = True
+
+        tips = self.robot.data.body_pos_w[:, self.fingertip_ids]
+        # Finger position = first-link pad centres (link midpoints); the
+        # second-link origins sat ~5 cm above the cube with the fingers
+        # already beside its face.
+        prox = self.robot.data.body_pos_w[:, self.proximal_ids]
+        fingers = (0.5 * (prox[:, :2] + tips[:, :2])).mean(dim=1)
+        if self.cfg.pre_height_distal:
+            axis = tips[:, :2] - prox[:, :2]
+            axis = axis / torch.linalg.vector_norm(axis, dim=-1, keepdim=True).clamp_min(1e-6)
+            distal = tips[:, :2] + self.cfg.pre_distal_centre_m * axis
+            fingers = torch.cat([fingers[:, :2], distal[..., 2].mean(dim=1, keepdim=True)], dim=1)
+        # Side the fingers are on (+1: +y face, -1: -y face); thumb opposite.
+        side = torch.where(fingers[:, 1] >= cube[:, 1], 1.0, -1.0)
+        target = cube.clone()
+        target[:, 2] += self.cfg.pre_height_offset_m
+        target[:, 1] += side * (self.cfg.object_size[1] / 2 + self.cfg.pre_face_gap_m)
+        target[:, 0] += self.cfg.pre_target_dx_m
+        err = torch.linalg.vector_norm(fingers - target, dim=1)
+        thumb_side = ((tips[:, 2, 1] - cube[:, 1]) * side < 0.0).float()
+        height_err = (fingers[:, 2] - cube[:, 2] - self.cfg.pre_height_offset_m).abs()
+        place = (
+            self.cfg.pre_broad_scale * torch.exp(-err / self.cfg.pre_broad_m)
+            + self.cfg.pre_sharp_scale * torch.exp(-err / self.cfg.pre_sharp_m) * thumb_side
+            + self.cfg.pre_height_scale * torch.exp(-height_err / self.cfg.pre_height_m)
+        )
+        X = torch.tensor([1.0, 0.0, 0.0], device=self.device).expand(self.num_envs * 2, 3)
+        pad_dir = quat_apply(self.robot.data.body_quat_w[:, list(self.fingertip_ids[:2])].reshape(-1, 4), X).reshape(-1, 2, 3)
+        pad_facing = (-side[:, None] * pad_dir[..., 1]).clamp(0.0, 1.0).mean(dim=1)
+        hand = self.robot.data.body_pos_w[:, self._hand_id]
+        d = fingers - hand
+        d = d / torch.linalg.vector_norm(d, dim=1, keepdim=True).clamp_min(1e-6)
+        front_quality = (-d[:, 0]).clamp(0.0, 1.0) * (1.0 - d[:, 2].abs() / self.cfg.front_level_tolerance).clamp(0.0, 1.0)
+        near = (err < self.cfg.pre_orient_near_m).float()
+        thumb_dir = quat_apply(self.robot.data.body_quat_w[:, self.proximal_ids[2]], X[: self.num_envs])
+        thumb_facing = (side * thumb_dir[:, 1]).clamp(0.0, 1.0)
+        place = place + near * self.cfg.pre_thumb_face_scale * thumb_facing
+        hand_yaw = torch.atan2(d[:, 1], -d[:, 0]).abs()
+        yaw_penalty = self.cfg.pre_yaw_scale * (hand_yaw - self.cfg.pre_yaw_free_rad).clamp_min(0.0)
+        place = place + near * (self.cfg.pre_pad_scale * pad_facing + self.cfg.pre_front_scale * front_quality)
+        down = (self.cfg.pre_down_limit - d[:, 2]).clamp_min(0.0)
+
+        names = [f"proximal_{i}" for i in (1, 2, 3)] + [f"finger_{i}" for i in (1, 2, 3)]
+        contact_n = torch.stack(
+            [torch.linalg.vector_norm(self.scene.sensors[n].data.force_matrix_w[:, 0, 0], dim=-1) for n in names], dim=1
+        ).amax(dim=1)
+        touching = contact_n > self.cfg.pre_contact_force_n
+        arm_speed = self.robot.data.joint_vel[:, self.arm_ids[:7]].abs().amax(dim=1)
+        # Forearm roll too: with only the wrist penalized the turn moved to it
+        # (-11 -> -47 deg in 8 s).
+        wrist_q = self.robot.data.joint_pos[:, [self.arm_ids[4], self.arm_ids[5], self.arm_ids[6]]]
+        wrist_bend = (wrist_q.abs() - self.cfg.pre_wrist_free_rad).clamp_min(0.0).sum(dim=1)
+        placed = (
+            (err < self.cfg.pre_success_err_m) & (thumb_side > 0) & (front_quality > 0.5) & (pad_facing > 0.5)
+            & (arm_speed < self.cfg.pre_success_speed_rad_s)
+        )
+        self._pre_placed = placed
+        success = placed & ~touching
+        arm = self.arm_ids[:7]
+        track_err = (self.targets[:, arm] - self.robot.data.joint_pos[:, arm]).square().sum(dim=1)
+        hand_links = [self._hand_id] + self.proximal_ids + list(self.fingertip_ids)
+        link_z = self.robot.data.body_pos_w[:, hand_links, 2]
+        table_close = (self.cfg.table_top_z + self.cfg.pre_table_clear_m - link_z).clamp_min(0.0).amax(dim=1)
+        low = link_z < self.cfg.table_top_z + self.cfg.pre_descent_zone_m
+        sink = (-self.robot.data.body_lin_vel_w[:, hand_links, 2]).clamp_min(0.0)
+        descent = (sink * low.float()).amax(dim=1)
+        still = ((err < self.cfg.pre_still_err_m) & (arm_speed < self.cfg.pre_still_speed_rad_s)).float()
+        # Terms that depend on where the (open) fingers are; v13 replaces them
+        # in its close phase.
+        self._pre_positive = place + self.cfg.pre_success_scale * success.float() + self.cfg.pre_still_scale * still
+        self._pre_terms = {
+            "place": place, "down": -self.cfg.pre_down_scale * down, "track": -self.cfg.pre_track_scale * track_err,
+            "table": -self.cfg.pre_table_scale * table_close, "contact": -self.cfg.pre_contact_scale * touching.float(),
+            "cube_move": -self.cfg.pre_cube_move_scale * self._cube_shift, "body": -self.cfg.pre_body_scale * self._body_intrusion,
+            "success": self.cfg.pre_success_scale * success.float(),
+            "vel": -self.cfg.pre_vel_scale * self.robot.data.joint_vel[:, self.arm_ids[:7]].square().sum(dim=1),
+            "wrist": -self.cfg.pre_wrist_scale * wrist_bend, "yaw": -yaw_penalty,
+            "rate": -self.cfg.pre_action_rate_scale * (self.actions[:, :7] - self.previous_actions[:, :7]).square().sum(dim=1),
+            "still": self.cfg.pre_still_scale * still,
+        }
+        reward = (
+            place - self.cfg.pre_down_scale * down
+            - self.cfg.pre_track_scale * track_err
+            - self.cfg.pre_table_scale * table_close
+            - self.cfg.pre_descent_scale * descent
+            - self.cfg.pre_contact_scale * touching.float()
+            - self.cfg.pre_cube_move_scale * self._cube_shift
+            - self.cfg.pre_body_scale * self._body_intrusion
+            + self.cfg.pre_success_scale * success.float()
+            - self.cfg.pre_vel_scale * self.robot.data.joint_vel[:, self.arm_ids[:7]].square().sum(dim=1)
+            - self.cfg.pre_wrist_scale * wrist_bend
+            - yaw_penalty
+            - self.cfg.pre_action_scale * self.actions[:, :7].square().sum(dim=1)
+            - self.cfg.pre_action_rate_scale * (self.actions[:, :7] - self.previous_actions[:, :7]).square().sum(dim=1)
+            + self.cfg.pre_still_scale * still
+        )
+        self.extras["log"] = {
+            "pre_err_m": err.mean(),
+            "pre_height_err_m": height_err.mean(),
+            "pre_side_plus_y": (side > 0).float().mean(),
+            "pre_pad_facing": pad_facing.mean(),
+            "pre_thumb_side": thumb_side.mean(),
+            "pre_front_quality": front_quality.mean(),
+            "pre_hand_dir_z": d[:, 2].mean(),
+            "pre_touching": touching.float().mean(),
+            "pre_success": success.float().mean(),
+            "pre_arm_speed": arm_speed.mean(),
+            "pre_wrist_bend_rad": wrist_bend.mean(),
+            "pre_track_err_rad2": track_err.mean(),
+            "pre_table_close_m": table_close.mean(),
+            "pre_descent_m_s": descent.mean(),
+            "pre_thumb_facing": thumb_facing.mean(),
+            "pre_hand_yaw_deg": torch.rad2deg(hand_yaw).mean(),
+            "pre_arm_action_sq": self.actions[:, :7].square().sum(dim=1).mean(),
+            "pre_cube_shift_m": self._cube_shift.mean(),
+            "pre_body_intrusion_m": self._body_intrusion.mean(),
+        }
+        return reward

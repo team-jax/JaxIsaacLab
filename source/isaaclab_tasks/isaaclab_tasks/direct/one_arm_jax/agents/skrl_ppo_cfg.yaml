@@ -1,0 +1,60 @@
+seed: 42
+models:
+  separate: false
+  policy:
+    class: GaussianMixin
+    clip_actions: false
+    clip_log_std: true
+    min_log_std: -5.0
+    max_log_std: 1.0
+    initial_log_std: -1.0
+    network:
+      - name: net
+        input: OBSERVATIONS
+        layers: [256, 256]
+        activations: elu
+    output: ACTIONS
+  value:
+    class: DeterministicMixin
+    network:
+      - name: net
+        input: OBSERVATIONS
+        layers: [256, 256]
+        activations: elu
+    output: ONE
+memory:
+  class: RandomMemory
+  memory_size: -1
+agent:
+  class: PPO
+  rollouts: 24
+  learning_epochs: 4
+  mini_batches: 8
+  discount_factor: 0.99
+  lambda: 0.95
+  learning_rate: 0.0001
+  learning_rate_scheduler: null
+  state_preprocessor: RunningStandardScaler
+  state_preprocessor_kwargs: null
+  value_preprocessor: RunningStandardScaler
+  value_preprocessor_kwargs: null
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 1.0
+  ratio_clip: 0.2
+  value_clip: 0.2
+  clip_predicted_values: true
+  entropy_loss_scale: 0.001
+  value_loss_scale: 2.0
+  kl_threshold: 0.02
+  rewards_shaper_scale: 0.1
+  time_limit_bootstrap: false
+  experiment:
+    directory: one_arm_jax_lift_hold_reward_v1
+    experiment_name: ''
+    write_interval: 24
+    checkpoint_interval: 240
+trainer:
+  class: SequentialTrainer
+  timesteps: 2400
+  environment_info: log

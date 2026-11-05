@@ -1,0 +1,68 @@
+"""v16: v15 with the grasp and the lift learned together.
+
+User (2026-10-28): train the grasp and the lift as one stage. The v12
+pre-grasp (frozen actor) runs to ``close_after_s``; from then on the balanced
+close (v13) closes the first joints while the policy drives the v15 lift
+joints at once, so it can raise the hand off the table (finger 2's plate was
+pressed onto it, bending its distal joint) while it squeezes. Action 7 sets the
+squeeze force. More pad links on the cube is paid, finger/table force costs,
+and the cube's x/y and rotation are measured from its spawn pose (it may move
+only along z).
+"""
+
+from __future__ import annotations
+
+import torch
+
+from isaaclab.utils import configclass
+
+from .v2_front_lift_rl import JaxV2FrontLiftRLEnv, JaxV2FrontLiftRLEnvCfg
+from .v2_pad_sensor_grasp import JaxV2PadSensorGraspEnv
+
+
+@configclass
+class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
+    lift_after_s = 5.0
+    lift_deadline_s = 10.0
+    lift_squeeze_deg = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    close_squeeze_range_n = 1.5
+    lift_ref_spawn = True
+    lift_quality_xy_m = 0.01
+    # Per pad link (first and second links of fingers 1/2 and thumb) pressing
+    # the cube with at least close_touch_n.
+    gl_contact_scale = 0.5
+    # Per N of finger 1/2 force on anything but the cube (the table).
+    gl_table_force_scale = 0.3
+    # v16_gl_c2 model_498: lift success 83%, clean 82%, but the hand tilted
+    # 15 deg (wrist pitch 32 -> 48 deg), cube rotation 10 deg, x/y 6 mm.
+    # Hand tilt and x/y cost 1.5x.
+    lift_hand_rot_scale = 18.0
+    lift_xy_scale = 90.0
+    # tilt model_747: success 84% but x/y 6 -> 11 mm, hand tilt still 16 deg,
+    # cube up 11 cm (target 8): the raw costs (~1/step) are small next to the
+    # rise terms (~14/step). Back to model_498 with the rise reward and clean
+    # bonus gated by hand tilt and tighter clean limits; overshoot costs 2x.
+    lift_quality_hand_rot_rad = 0.15
+    lift_clean_hand_rot_deg = 10.0
+    lift_clean_xy_m = 0.008
+    lift_clean_rot_deg = 10.0
+    lift_over_scale = 60.0
+
+
+class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
+    cfg: JaxV2FrontGraspLiftEnvCfg
+
+    def _get_rewards(self):
+        reward = super()._get_rewards()
+        log = self.extras["log"]
+        closing = self._closing()
+        on = JaxV2PadSensorGraspEnv.pad_forces(self) >= self.cfg.close_touch_n
+        n_on = on.float().sum(dim=1)
+        terms = self.cfg.gl_contact_scale * n_on - self.cfg.gl_table_force_scale * self._table_force
+        reward = reward + closing.float() * terms
+        n = closing.float().sum().clamp_min(1.0)
+        log["gl_pads_on"] = (n_on * closing).sum() / n
+        log["gl_all_distal"] = (on[:, 3:].all(dim=1) & closing).float().sum() / n
+        log["gl_table_force_n"] = (self._table_force * closing).sum() / n
+        log["gl_spawn_xy_mm"] = 1000.0 * (self._cube_shift * closing).sum() / n
+        return reward

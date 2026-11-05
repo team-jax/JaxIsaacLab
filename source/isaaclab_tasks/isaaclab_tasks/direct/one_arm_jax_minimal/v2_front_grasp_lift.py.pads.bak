@@ -1,0 +1,72 @@
+"""v16: v15 with the grasp and the lift learned together.
+
+User (2026-10-28): train the grasp and the lift as one stage. The v12
+pre-grasp (frozen actor) runs to ``close_after_s``; from then on the balanced
+close (v13) closes the first joints while the policy drives the v15 lift
+joints at once, so it can raise the hand off the table (finger 2's plate was
+pressed onto it, bending its distal joint) while it squeezes. Action 7 sets the
+squeeze force. More pad links on the cube is paid, finger/table force costs,
+and the cube's x/y and rotation are measured from its spawn pose (it may move
+only along z).
+"""
+
+from __future__ import annotations
+
+import torch
+
+from isaaclab.utils import configclass
+
+from .v2_front_lift_rl import JaxV2FrontLiftRLEnv, JaxV2FrontLiftRLEnvCfg
+from .v2_pad_sensor_grasp import JaxV2PadSensorGraspEnv
+
+
+@configclass
+class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
+    lift_after_s = 5.0
+    lift_deadline_s = 10.0
+    lift_squeeze_deg = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    close_squeeze_range_n = 1.5
+    lift_ref_spawn = True
+    lift_quality_xy_m = 0.01
+    # Per pad link (first and second links of fingers 1/2 and thumb) pressing
+    # the cube with at least close_touch_n.
+    gl_contact_scale = 0.5
+    # Per N of finger 1/2 force on anything but the cube (the table).
+    gl_table_force_scale = 0.3
+    # Tilt-cost, tilt-gate, wrist-coupling and squeeze runs from model_498 all
+    # did worse (.tilt/.gate/.pitch/.pitch2/.squeeze.bak). slip_probe: with a
+    # level hand the pads alone hold the cube and it slips, because the thumb
+    # presses with its first link (1.1-1.7 N vs 0.5-0.8 N distal) off-axis
+    # from fingers 1/2. The tilted hand cradles it. Back to model_498's
+    # settings; the policy now also sets the thumb first-joint close limit
+    # (0 +/- 30 deg) to find an opposing thumb pad.
+    # thumb model_747: the thumb limit action went unused (thumb first joint
+    # -30.5 deg, already touching), result as tilt (x/y 11 mm, tilt 16 deg).
+    # thumb2_scan (thumb second 0-105 deg) and slip_probe with cube friction 3:
+    # level lifts all "slipped" alike; the slip metric was wrong (hand base vs
+    # fingertips), not the grip. Coupled level lift again (pitch2 settings)
+    # with hand rise and slip measured at the pads.
+    close_thumb_max_range_deg = 0.0
+    lift_keep_hand_pitch = True
+    lift_active_joints = (0, 3)
+    lift_arm_range_rad = 0.5
+    lift_hand_at_pads = True
+
+
+class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
+    cfg: JaxV2FrontGraspLiftEnvCfg
+
+    def _get_rewards(self):
+        reward = super()._get_rewards()
+        log = self.extras["log"]
+        closing = self._closing()
+        on = JaxV2PadSensorGraspEnv.pad_forces(self) >= self.cfg.close_touch_n
+        n_on = on.float().sum(dim=1)
+        terms = self.cfg.gl_contact_scale * n_on - self.cfg.gl_table_force_scale * self._table_force
+        reward = reward + closing.float() * terms
+        n = closing.float().sum().clamp_min(1.0)
+        log["gl_pads_on"] = (n_on * closing).sum() / n
+        log["gl_all_distal"] = (on[:, 3:].all(dim=1) & closing).float().sum() / n
+        log["gl_table_force_n"] = (self._table_force * closing).sum() / n
+        log["gl_spawn_xy_mm"] = 1000.0 * (self._cube_shift * closing).sum() / n
+        return reward

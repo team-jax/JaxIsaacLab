@@ -1,0 +1,170 @@
+"""v13: v12 pre-grasp, then close the hand on the cube (no lift).
+
+Same L start, hand shape and arm control as v12. For the first
+``close_after_s`` the episode is the v12 pre-grasp (fingers held open, any cube
+contact penalized). After that the finger actions (8:11) close the hand: each
+sets an absolute fraction of the way from the open shape to ``close_shape_deg``
+(fingers 1/2 with both joints, the thumb with its second joint only; its
+palm-side joint and RotationBody stay as in the pre-grasp). In the close phase
+the thumb and finger 1 or 2 pressing opposite faces with their pads is paid,
+side-of-link force and cube motion are penalized, and the v12 placement terms
+stay so the arm holds the pre-grasp position.
+"""
+
+from __future__ import annotations
+
+import math
+
+import torch
+
+from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_apply
+
+from .v2_pad_sensor_grasp import JaxV2PadSensorGraspEnv
+from .v2_front_pregrasp import JaxV2FrontPregraspEnv, JaxV2FrontPregraspEnvCfg
+
+
+@configclass
+class JaxV2FrontGraspCloseEnvCfg(JaxV2FrontPregraspEnvCfg):
+    close_after_s = 5.0
+    # finger_ids order: f1_1, f2_1, f3_1, f1_2, f2_2, f3_2. The thumb's first
+    # joint keeps its pre-grasp value.
+    close_shape_deg = (60.0, 60.0, 50.0, 90.0, 90.0, 90.0)
+    grasp_force_n = 0.3
+    grasp_both_scale = 1.0
+    grasp_reading_scale = 0.1
+    grasp_side_scale = 0.05
+    grasp_close_rate_scale = 0.05
+    # close model_1544: once the fingers closed the arm swung away (shoulder
+    # yaw 60, hand yaw -38 deg, hand pointing +y) and dragged the cube 8 cm.
+    # In the close phase the arm target is the one at close onset plus this x
+    # the action, and cube motion costs more.
+    close_arm_range_rad = 0.15
+    # Probe of model_1600 (256 envs, close phase): half-closed fingers held
+    # the cube 89% of the time but closing pushed it ~4 cm, and 30 x the
+    # shift beyond 1 cm (~0.9/step) ate the hold bonus, so open fingers
+    # scored about the same. Allow 2 cm and cost less.
+    grasp_cube_move_scale = 5.0
+    # close_latch model_1793 stopped closing (both 72% at 1600 -> 8%): touching
+    # lost the v12 success bonus (it requires no contact) and every mm of
+    # cube shift cost. Pay the success bonus back when placed and touching,
+    # and penalize shift only beyond 1 cm.
+    grasp_cube_move_free_m = 0.02
+    # User (2026-10-25): grasp with the whole face of the distal links. Pay
+    # thumb and finger 1/2 second-link pad force (true pad normal, also for
+    # the thumb) and those pads lying flat on the cube faces; first-link
+    # contact costs a little. Action 7 (unused RotationBody slot) now drives
+    # the finger 1/2 second joints separately from their first joints
+    # (actions 8/9), so a finger can curl at the base and keep its tip flat.
+    grasp_distal_force_n = 0.3
+    grasp_flat_scale = 0.5
+    grasp_proximal_scale = 0.05
+    # close_keep model_1849 still stopped closing: curling the fingers moves
+    # the pad centres off the v12 target and turns the pads, losing the
+    # placement, facing, success and still terms. In the close phase those
+    # are replaced by their value at close onset.
+
+
+class JaxV2FrontGraspCloseEnv(JaxV2FrontPregraspEnv):
+    cfg: JaxV2FrontGraspCloseEnvCfg
+
+    def _closing(self) -> torch.Tensor:
+        return self.episode_length_buf * self.step_dt >= self.cfg.close_after_s
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+        super()._pre_physics_step(actions)
+        if not hasattr(self, "_arm_hold"):
+            self._arm_hold = self.targets[:, self.arm_ids[:7]].clone()
+        arm = self.arm_ids[:7]
+        closing = self._closing()
+        # Latch the pre-grasp arm target (minus the close-phase offset of the
+        # current action, so the target does not jump) until closing starts.
+        self._arm_hold = torch.where(
+            closing[:, None], self._arm_hold, self.targets[:, arm] - self.cfg.close_arm_range_rad * self.actions[:, :7]
+        )
+        held = self._arm_hold + self.cfg.close_arm_range_rad * self.actions[:, :7]
+        held = torch.minimum(torch.maximum(held, self.lower[arm]), self.upper[arm])
+        self.targets[:, arm] = torch.where(closing[:, None], held, self.targets[:, arm])
+
+    def _hold_hand_shape(self):
+        super()._hold_hand_shape()
+        if not hasattr(self, "_close_shape"):
+            self._close_shape = torch.tensor([math.radians(v) for v in self.cfg.close_shape_deg], device=self.device)
+        # Fraction closed per joint: finger 1/2 second joints from action 7,
+        # their first joints from action 8, thumb first joint (-30 -> +50 deg)
+        # from action 9, thumb second joint from action 10. distal_scan
+        # (model_1600 pre-grasp, 320 shapes): with the thumb first joint fixed
+        # at -30 the thumb's distal pad rarely met the cube; thumb 30/30,
+        # fingers 0/30 put all three distal pads flat on the faces (flat
+        # 0.89/1.0/0.83, no first-link force, cube shift 1.5 mm).
+        frac = 0.5 * (self.actions[:, 7:11] + 1.0)
+        frac6 = frac[:, [1, 1, 2, 0, 0, 3]]
+        closed = self._hand_shape + frac6 * (self._close_shape - self._hand_shape)
+        self.targets[:, self.finger_ids] = torch.where(self._closing()[:, None], closed, self._hand_shape)
+
+    def _get_rewards(self):
+        reward = super()._get_rewards()
+        log = self.extras["log"]
+        closing = self._closing()
+        # Undo the v12 no-contact and cube-move penalties in the close phase.
+        names = [f"proximal_{i}" for i in (1, 2, 3)] + [f"finger_{i}" for i in (1, 2, 3)]
+        contact_n = torch.stack(
+            [torch.linalg.vector_norm(self.scene.sensors[n].data.force_matrix_w[:, 0, 0], dim=-1) for n in names], dim=1
+        )
+        touching = contact_n.amax(dim=1) > self.cfg.pre_contact_force_n
+        if not hasattr(self, "_pre_positive_onset"):
+            self._pre_positive_onset = torch.zeros(self.num_envs, device=self.device)
+        self._pre_positive_onset = torch.where(closing, self._pre_positive_onset, self._pre_positive)
+        undo = (
+            self.cfg.pre_contact_scale * touching.float()
+            + self.cfg.pre_cube_move_scale * self._cube_shift
+            - self._pre_positive
+            + self._pre_positive_onset
+        )
+
+        # Pad-normal force on [first links 1-3, second links 1-3], thumb included
+        # (the v11 override counts any thumb force as a pad force).
+        pad_n = JaxV2PadSensorGraspEnv.pad_forces(self)
+        distal = pad_n[:, 3:] >= self.cfg.grasp_distal_force_n
+        thumb_on = distal[:, 2]
+        finger_on = distal[:, :2].any(dim=1)
+        both = thumb_on & finger_on
+        reading = self.sensor_readings(pad_n)[:, 3:].sum(dim=1)
+        # Flatness: second-link pad direction (+x) against the cube face it
+        # should meet (fingers on the `side` face, thumb on the other).
+        cube_q = self.object.data.root_quat_w
+        Y = torch.tensor([0.0, 1.0, 0.0], device=self.device).expand(self.num_envs, 3)
+        cube_y = quat_apply(cube_q, Y)
+        cube = self.object.data.root_pos_w
+        prox = self.robot.data.body_pos_w[:, self.proximal_ids[:2]]
+        tips = self.robot.data.body_pos_w[:, self.fingertip_ids]
+        side = torch.sign((((0.5 * (prox + tips[:, :2])).mean(dim=1) - cube) * cube_y).sum(dim=1)).clamp(min=-1.0)
+        side = torch.where(side == 0, 1.0, side)
+        X = torch.tensor([1.0, 0.0, 0.0], device=self.device).expand(self.num_envs * 3, 3)
+        pad_dir = quat_apply(self.robot.data.body_quat_w[:, list(self.fingertip_ids)].reshape(-1, 4), X).reshape(-1, 3, 3)
+        want = torch.stack((-side, -side, side), dim=1)[..., None] * cube_y[:, None]
+        flat = (pad_dir * want).sum(dim=-1).clamp(0.0, 1.0)
+        flat_paid = (flat * distal.float()).sum(dim=1)
+        proximal_n = pad_n[:, :3].sum(dim=1).clamp(max=20.0)
+        side_n = (contact_n - pad_n).clamp_min(0.0).sum(dim=1).clamp(max=20.0)
+        close_rate = (self.actions[:, 7:11] - self.previous_actions[:, 7:11]).square().sum(dim=1)
+        grasp = (
+            undo
+            + self.cfg.grasp_both_scale * both.float()
+            + self.cfg.grasp_reading_scale * reading
+            + self.cfg.grasp_flat_scale * flat_paid
+            - self.cfg.grasp_proximal_scale * proximal_n
+            - self.cfg.grasp_side_scale * side_n
+            - self.cfg.grasp_cube_move_scale * (self._cube_shift - self.cfg.grasp_cube_move_free_m).clamp_min(0.0)
+            - self.cfg.grasp_close_rate_scale * close_rate
+        )
+        reward = reward + closing.float() * grasp
+        log["grasp_both"] = (both & closing).float().sum() / closing.float().sum().clamp_min(1.0)
+        log["grasp_thumb_on"] = (thumb_on & closing).float().sum() / closing.float().sum().clamp_min(1.0)
+        log["grasp_finger_on"] = (finger_on & closing).float().sum() / closing.float().sum().clamp_min(1.0)
+        log["grasp_side_n"] = side_n.mean()
+        log["grasp_close_frac"] = (0.5 * (self.actions[:, 7:11] + 1.0)).mean()
+        log["grasp_flat"] = ((flat * distal.float()).sum(dim=1) * closing).sum() / closing.float().sum().clamp_min(1.0)
+        log["grasp_proximal_n"] = proximal_n.mean()
+        log["pre_touch_before_close"] = (touching & ~closing).float().mean()
+        return reward
