@@ -21,7 +21,7 @@ from .pregrasp import OneArmJaxPregraspDownEnvCfg, OneArmJaxPregraspEnv
 class JaxV2PregraspDownEnvCfg(OneArmJaxPregraspDownEnvCfg):
     robot_cfg = JAX_V2_ASSEMBLY_1006_CFG.replace(
         init_state=JAX_V2_ASSEMBLY_1006_CFG.init_state.replace(
-            pos=(0.0, 0.0, 1.20 - 0.895),
+            pos=(0.0, 0.0, 1.20 - 0.895 + float(__import__("os").environ.get("GL_ROBOT_DZ", "0"))),  # GL_ROBOT_DZ: equivalence check
             rot=(0.7071067811865476, 0.0, 0.0, -0.7071067811865476),
         )
     )

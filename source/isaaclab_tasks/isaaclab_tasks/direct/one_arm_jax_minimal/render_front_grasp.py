@@ -149,8 +149,19 @@ if args.raise_policy:
     # v39: with a deeper pre-grasp (GL_REACH_DX/DY) the raise path went in deep and the hand hit the cube (5.9 N,
     # cube pushed 10 mm): the raise now ends at the shallow pre-grasp and the open hand moves in afterwards
     REACH = (float(getattr(rc, "raise_reach_dx_m", 0.0)), float(getattr(rc, "raise_reach_dy_m", 0.0)))
+    # v63: RAISE_BACK_M (m, +x = toward the robot) ends the raise that much short of the shallow pre-grasp; the reach-in then
+    # covers it too (a turned cube's corners stick out up to 10 mm past its faces and the end of the raise hit them)
+    BACK = float(os.environ.get("RAISE_BACK_M", "0"))
+    # v63 (wide cube box): RAISE_SIDE_M (m, +y = the side of fingers 1-2) ends the raise that much to the side too; the
+    # reach-in then moves in diagonally to the same pre-grasp (at y -10 cm the yaw-free hand turns 14 deg and fingers 1-2
+    # swept a turned cube's corner, pushing it up to 24 mm; a 2 cm side start cut that to <1 mm in the probe)
+    SIDE = float(os.environ.get("RAISE_SIDE_M", "0"))
+    # RAISE_SIDE_K (m per m): plus that times how far the cube sits toward the robot's middle (-dy); the hand's heading turns
+    # with dy, so a fixed side start that cleared y -10 drove the thumb into the cube at y +6 (15-20 mm)
+    _cdy = float(args.raise_cube.split(",")[1]) if args.raise_cube else 0.0
+    SIDE += float(os.environ.get("RAISE_SIDE_K", "0")) * max(-_cdy, 0.0)
     if any(REACH):
-        rc.raise_reach_dx_m = rc.raise_reach_dy_m = 0.0
+        rc.raise_reach_dx_m, rc.raise_reach_dy_m = BACK, SIDE
     # v43c: pre-grasp hand roll (GL_ROLL_DEG, wrist-yaw joint), added after the raise like the reach-in
     ROLL = math.radians(float(os.environ.get("GL_ROLL_DEG", "0")))
     PATH_DZ = float(os.environ.get("RAISE_PATH_DZ", "0"))
@@ -249,7 +260,7 @@ if args.raise_policy:
             p = u.robot.data.body_pos_w[:, hand_ids] - u.scene.env_origins[:, None]
             _ex = rc.raise_table_edge_x if getattr(rc, "raise_table_edge_real_x", None) is None else rc.raise_table_edge_real_x
             x_in = (_ex + rc.raise_edge_margin_m) - p[..., 0]
-            z_in = (rc.table_top_z + PATH_DZ + rc.raise_clear_m + rc.raise_plate_drop_m) - p[..., 2]
+            z_in = (rc.table_top_z + PATH_DZ + float(os.environ.get("GL_TABLE_Z0", "0")) + rc.raise_clear_m + rc.raise_plate_drop_m) - p[..., 2]  # v53: real table
             keep_max = torch.maximum(keep_max, torch.minimum(x_in, z_in).clamp_min(0.0).amax(dim=1))
             cn = torch.stack([torch.linalg.vector_norm(u.scene.sensors[n].data.net_forces_w[:, 0], dim=-1) for n in sens], 1).sum(1)
             contact_max = torch.maximum(contact_max, cn)

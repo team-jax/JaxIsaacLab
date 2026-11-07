@@ -80,11 +80,21 @@ with torch.inference_mode():
         xc = quat_apply(cq, ex); x0 = quat_apply(cq0, ex)
         yaw = torch.rad2deg(torch.atan2(xc[:, 1], xc[:, 0]) - torch.atan2(x0[:, 1], x0[:, 0]))
         yaw = (yaw + 180) % 360 - 180
+        if os.environ.get("EVAL_YAW_LO"):
+            # v58: yaw while lifting measured from the cube's heading at lift-off (1 cm), so squaring a turned cube up on
+            # the table does not count as turning during the lift
+            if k == 0:
+                x_lo = x0.clone()
+            x_lo = torch.where((~up)[:, None], xc, x_lo)
+            yaw_l = torch.rad2deg(torch.atan2(xc[:, 1], xc[:, 0]) - torch.atan2(x_lo[:, 1], x_lo[:, 0]))
+            yaw_l = (yaw_l + 180) % 360 - 180
+        else:
+            yaw_l = yaw
         if k == 0:
             tilt_close = torch.zeros(NE, device=u.device); yaw_close = torch.zeros(NE, device=u.device)
             tilt_lift = torch.zeros(NE, device=u.device); yaw_lift = torch.zeros(NE, device=u.device)
         tilt_close = torch.where(~up, torch.maximum(tilt_close, tilt), tilt_close); yaw_close = torch.where(~up, torch.maximum(yaw_close, yaw.abs()), yaw_close)
-        tilt_lift = torch.where(lifting_now, torch.maximum(tilt_lift, tilt), tilt_lift); yaw_lift = torch.where(lifting_now, torch.maximum(yaw_lift, yaw.abs()), yaw_lift)
+        tilt_lift = torch.where(lifting_now, torch.maximum(tilt_lift, tilt), tilt_lift); yaw_lift = torch.where(lifting_now, torch.maximum(yaw_lift, yaw_l.abs()), yaw_lift)
     rise = u.object.data.root_pos_w[:, 2] - cube0[:, 2]
     xy = (u.object.data.root_pos_w[:, :2] - cube0[:, :2]).norm(dim=1)
 for g in range(9):
