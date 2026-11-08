@@ -16,7 +16,10 @@ raw = gym.make("Isaac-JaxV2-FrontGraspLift-Direct-v16", cfg=cfg); u = raw.unwrap
 _EG = os.environ.get("EVAL_GRID", "-0.08,-0.03,0.02;-0.05,0.0,0.06")  # v49: "x0,x1,x2;y0,y1,y2" (m)
 _EX = [float(v) for v in _EG.split(";")[0].split(",")]; _EY = [float(v) for v in _EG.split(";")[1].split(",")]
 grid = torch.tensor([[dx, dy] for dx in _EX for dy in _EY], device=u.device)
-u._gl_cube_off_fixed = grid[torch.arange(NE, device=u.device) % 9]
+if os.environ.get("EVAL_CELLS"):  # v65: explicit cube offsets "x,y;x,y;..." (m) instead of the 3x3 product
+    grid = torch.tensor([[float(v) for v in c.split(",")] for c in os.environ["EVAL_CELLS"].split(";")], device=u.device)
+NC = grid.shape[0]
+u._gl_cube_off_fixed = grid[torch.arange(NE, device=u.device) % NC]
 ac = handle_deprecated_rsl_rl_cfg(JaxV2FrontGraspLiftPPORunnerCfg(), importlib.metadata.version("rsl-rl-lib"))
 env = RslRlVecEnvWrapper(raw, clip_actions=1.0)
 runner = OnPolicyRunner(env, ac.to_dict(), log_dir=None, device=ac.device); runner.load(CK); pol = runner.get_inference_policy(device=u.device)
@@ -80,15 +83,25 @@ with torch.inference_mode():
         xc = quat_apply(cq, ex); x0 = quat_apply(cq0, ex)
         yaw = torch.rad2deg(torch.atan2(xc[:, 1], xc[:, 0]) - torch.atan2(x0[:, 1], x0[:, 0]))
         yaw = (yaw + 180) % 360 - 180
+        if os.environ.get("EVAL_YAW_LO"):
+            # v58: yaw while lifting measured from the cube's heading at lift-off (1 cm), so squaring a turned cube up on
+            # the table does not count as turning during the lift
+            if k == 0:
+                x_lo = x0.clone()
+            x_lo = torch.where((~up)[:, None], xc, x_lo)
+            yaw_l = torch.rad2deg(torch.atan2(xc[:, 1], xc[:, 0]) - torch.atan2(x_lo[:, 1], x_lo[:, 0]))
+            yaw_l = (yaw_l + 180) % 360 - 180
+        else:
+            yaw_l = yaw
         if k == 0:
             tilt_close = torch.zeros(NE, device=u.device); yaw_close = torch.zeros(NE, device=u.device)
             tilt_lift = torch.zeros(NE, device=u.device); yaw_lift = torch.zeros(NE, device=u.device)
         tilt_close = torch.where(~up, torch.maximum(tilt_close, tilt), tilt_close); yaw_close = torch.where(~up, torch.maximum(yaw_close, yaw.abs()), yaw_close)
-        tilt_lift = torch.where(lifting_now, torch.maximum(tilt_lift, tilt), tilt_lift); yaw_lift = torch.where(lifting_now, torch.maximum(yaw_lift, yaw.abs()), yaw_lift)
+        tilt_lift = torch.where(lifting_now, torch.maximum(tilt_lift, tilt), tilt_lift); yaw_lift = torch.where(lifting_now, torch.maximum(yaw_lift, yaw_l.abs()), yaw_lift)
     rise = u.object.data.root_pos_w[:, 2] - cube0[:, 2]
     xy = (u.object.data.root_pos_w[:, :2] - cube0[:, :2]).norm(dim=1)
-for g in range(9):
-    m = (torch.arange(NE, device=u.device) % 9) == g
+for g in range(NC):
+    m = (torch.arange(NE, device=u.device) % NC) == g
     print("RES", json.dumps({"dx_cm": round(float(grid[g, 0]) * 100, 1), "dy_cm": round(float(grid[g, 1]) * 100, 1),
           "lifted": round(float((rise[m] > 0.04).float().mean()), 2), "rise_mm": round(float(rise[m].mean()) * 1000, 1),
           "table_N_max": round(float(tmax[m].max()), 2), "xy_drift_mm": round(float(xy[m].mean()) * 1000, 1)}), flush=True)
@@ -115,8 +128,8 @@ if nd.any():
     print("STALL action0(up<0) mean %.2f | lift_offset mean deg %s | ik_pdes-p z mm %.1f" % (float(_act[nd, 0].mean()), [round(math.degrees(float(v)), 1) for v in u._lift_offset[nd].mean(0)],
           float((u._ik_pdes[nd, 2] - u.robot.data.body_pos_w[nd][:, u.fingertip_ids].mean(1)[:, 2]).mean()) * 1000), flush=True)
     print("STALL q deg mean", [round(math.degrees(float(v)), 1) for v in qa[nd].mean(0)], "lo", [round(math.degrees(float(v)), 1) for v in lo[0]], "hi", [round(math.degrees(float(v)), 1) for v in hi[0]], flush=True)
-for g in range(9):
-    m = (torch.arange(NE, device=u.device) % 9) == g
+for g in range(NC):
+    m = (torch.arange(NE, device=u.device) % NC) == g
     print("CELL", round(float(grid[g, 0]) * 100), round(float(grid[g, 1]) * 100), "done %.2f lifted %.2f maxrise_mm %.0f" % (float(u.lift_done[m].float().mean()), float((rise[m] > 0.04).float().mean()), float(rmax[m].mean()) * 1000), flush=True)
 dt_ = u.lift_done_t[u.lift_done] - c.close_after_s
 print("DONE_T mean %.2f p90 %.2f max %.2f (s after close start)" % ((float(dt_.mean()), float(dt_.quantile(0.9)), float(dt_.max())) if len(dt_) else (-1, -1, -1)), flush=True)
@@ -152,7 +165,7 @@ try:
     a7 = u._ret_a7; a810 = u._ret_a810
     def _m(x, m): return round(float(x[m].mean()), 2) if m.any() else None
     print("DROP n %d of done %d | drop_t after done s %s | cells %s" % (int(dropped.sum()), int(u.lift_done.sum()),
-          [round(float(v), 2) for v in drop_t[dropped]], [(round(float(grid[i % 9, 0]) * 100), round(float(grid[i % 9, 1]) * 100)) for i in torch.nonzero(dropped).flatten().tolist()]), flush=True)
+          [round(float(v), 2) for v in drop_t[dropped]], [(round(float(grid[i % NC, 0]) * 100), round(float(grid[i % NC, 1]) * 100)) for i in torch.nonzero(dropped).flatten().tolist()]), flush=True)
     print("DROP squeeze actions at return start (a7 finger, a9 thumb; force 5+4a N) dropped a7 %s a9 %s | held a7 %s a9 %s" % (_m(a7, dropped), _m(a810[:, 1], dropped), _m(a7, heldm), _m(a810[:, 1], heldm)), flush=True)
     print("DROP pads N before drop (prox1,prox2,proxT,dist1,dist2,distT) dropped %s | held end %s" % ([round(float(v), 2) for v in pf_pre[dropped].mean(0)] if dropped.any() else None, [round(float(v), 2) for v in u.pad_forces()[heldm].mean(0)]), flush=True)
 except Exception as _e:
@@ -160,7 +173,7 @@ except Exception as _e:
 try:
     with open("/tmp/claude-1000/-home-jeongwoo-isaacsim-JaxIsaacLab/886e2a88-a982-4003-b7f5-73532822d877/scratchpad/v46_drop.log", "a") as _f:
         _f.write("== %s held %.3f done %.3f\n" % (CK, float((u.lift_done & (rise > 0.04)).float().mean()), float(u.lift_done.float().mean())))
-        _f.write("DROP n %d | t %s | cells %s\n" % (int(dropped.sum()), [round(float(v), 2) for v in drop_t[dropped]], [(round(float(grid[i % 9, 0]) * 100), round(float(grid[i % 9, 1]) * 100)) for i in torch.nonzero(dropped).flatten().tolist()]))
+        _f.write("DROP n %d | t %s | cells %s\n" % (int(dropped.sum()), [round(float(v), 2) for v in drop_t[dropped]], [(round(float(grid[i % NC, 0]) * 100), round(float(grid[i % NC, 1]) * 100)) for i in torch.nonzero(dropped).flatten().tolist()]))
         _f.write("SQZ dropped a7 %s a9 %s | held a7 %s a9 %s\n" % (_m(a7, dropped), _m(a810[:, 1], dropped), _m(a7, heldm), _m(a810[:, 1], heldm)))
         _f.write("CURL held distal curl deg (60 x clamp(a, 0, 1)) fingers %s thumb %s\n" % (_m(60.0 * a810[:, 0].clamp(0, 1), heldm), _m(60.0 * a810[:, 2].clamp(0, 1), heldm)))
         _f.write("PADS dropped_before %s | held_end %s\n" % ([round(float(v), 2) for v in pf_pre[dropped].mean(0)] if dropped.any() else None, [round(float(v), 2) for v in u.pad_forces()[heldm].mean(0)]))

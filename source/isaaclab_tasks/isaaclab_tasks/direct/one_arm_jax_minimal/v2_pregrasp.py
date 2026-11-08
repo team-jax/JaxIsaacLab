@@ -17,14 +17,26 @@ from isaaclab_assets.robots.jax_v2_assembly_1006 import (
 from .pregrasp import OneArmJaxPregraspDownEnvCfg, OneArmJaxPregraspEnv
 
 
+# v3 (user 2026-11-08: "URDF_1108 is really ours, switch to it"): GL_ROBOT=v3 spawns the JAX V3 assembly (URDF_1108-2,
+# isaaclab_assets/robots/jax_v3_assembly_1108.py; joint angles keep the V2 sign convention). Its base_link is the stand
+# (shoulder pitch frame at (-0.15, 0, 1.2125) in it vs V2 (-0.16, 0, 0.85)), so the base goes to (0, 0.01, -0.0575): the
+# shoulder lands where the V2 shoulder was (world (0, 0.16, 1.155)) and the table / cube layout relative to it is unchanged.
+_ROBOT_V3 = __import__("os").environ.get("GL_ROBOT", "") in ("v3", "v3m")  # v3m: diagnostic, V2 inertials
+_ROBOT_DZ = float(__import__("os").environ.get("GL_ROBOT_DZ", "0"))
+if _ROBOT_V3:
+    from isaaclab_assets.robots.jax_v3_assembly_1108 import JAX_V3_ASSEMBLY_1108_CFG, JAX_V3M_ASSEMBLY_1108_CFG
+    _V3CFG = JAX_V3M_ASSEMBLY_1108_CFG if __import__("os").environ.get("GL_ROBOT") == "v3m" else JAX_V3_ASSEMBLY_1108_CFG
+    _ROBOT_CFG = _V3CFG.replace(init_state=_V3CFG.init_state.replace(
+        pos=(0.0, 0.16 - 0.15, 1.20 - 0.895 + 0.85 - 1.2125 + _ROBOT_DZ), rot=(0.7071067811865476, 0.0, 0.0, -0.7071067811865476)))
+else:
+    _ROBOT_CFG = JAX_V2_ASSEMBLY_1006_CFG.replace(init_state=JAX_V2_ASSEMBLY_1006_CFG.init_state.replace(
+        pos=(0.0, 0.0, 1.20 - 0.895 + _ROBOT_DZ),  # GL_ROBOT_DZ: equivalence check
+        rot=(0.7071067811865476, 0.0, 0.0, -0.7071067811865476)))
+
+
 @configclass
 class JaxV2PregraspDownEnvCfg(OneArmJaxPregraspDownEnvCfg):
-    robot_cfg = JAX_V2_ASSEMBLY_1006_CFG.replace(
-        init_state=JAX_V2_ASSEMBLY_1006_CFG.init_state.replace(
-            pos=(0.0, 0.0, 1.20 - 0.895),
-            rot=(0.7071067811865476, 0.0, 0.0, -0.7071067811865476),
-        )
-    )
+    robot_cfg = _ROBOT_CFG
     arm_joint_names = JAX_V2_ARM_JOINTS
     finger_joint_names = JAX_V2_FINGER_JOINTS
     fingertip_body_names = ("Finger_1_2", "Finger_2_2", "Finger_3_2")

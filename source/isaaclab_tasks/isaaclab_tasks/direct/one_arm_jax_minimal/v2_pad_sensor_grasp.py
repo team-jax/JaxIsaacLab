@@ -203,8 +203,11 @@ class JaxV2PadSensorGraspEnv(JaxV2SmoothGraspEnv):
 
     def _get_observations(self):
         object_b, hand_b, object_vel_b = self._state()
+        if hasattr(self, "_obs_base_off"):  # v3: cube position relative to the V2 base origin (object - hand unchanged)
+            object_b = object_b - self._obs_base_off; hand_b = hand_b - self._obs_base_off
         q = self.robot.data.joint_pos
-        normalized_q = 2.0 * (q - self.lower) / (self.upper - self.lower).clamp_min(1e-5) - 1.0
+        lo, hi = (self._obs_lo, self._obs_hi) if hasattr(self, "_obs_lo") else (self.lower, self.upper)  # v3: V2 limits
+        normalized_q = 2.0 * (q - lo) / (hi - lo).clamp_min(1e-5) - 1.0
         pressure = self.sensor_readings(self.pad_forces())
         observation = torch.cat((
             normalized_q, self.robot.data.joint_vel * 0.2,

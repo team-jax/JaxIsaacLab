@@ -296,6 +296,8 @@ class JaxV2FrontLiftRLEnv(JaxV2FrontLiftEnv):
             # v38: the policy's lift commands act only once all three digits have touched the cube (training
             # policies lifted the hand before the fingers closed, avoiding the grasp and its costs)
             gate = gate * self._grip_latched.float()
+        if getattr(c, "close_settle", None) and hasattr(self, "_settle_t"):
+            gate = gate * (self._settle_t >= c.close_settle[0]).float()  # v68 probe: no lift during the settle
         if getattr(c, "lift_ik_pitch_rate", 0.0):
             # v28e: action 6 tilts the held hand orientation about world y (hand pitch; the joint-rate
             # policies cradled the cube by pitching the hand up 10-17 deg, the fixed orientation could not)

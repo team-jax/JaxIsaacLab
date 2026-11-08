@@ -24,6 +24,9 @@ from isaaclab.utils.math import quat_apply
 from .v2_front_grasp import JaxV2FrontGraspEnv, JaxV2FrontGraspEnvCfg
 
 
+_GL_CUBE_SIDE = float(os.environ.get("GL_CUBE_SIDE", "0.055"))
+_GL_CUBE_MASS_NOM = float(os.environ.get("GL_CUBE_MASS_NOM", "0.055"))
+
 @configclass
 class JaxV2FrontPregraspEnvCfg(JaxV2FrontGraspEnvCfg):
     # stage1_still model_996 swung the arm after 6 s in an 8 s video: it had
@@ -36,11 +39,13 @@ class JaxV2FrontPregraspEnvCfg(JaxV2FrontGraspEnvCfg):
     # cube finger 2 would have to be 2 mm over the table for both to press
     # one face (distal_h model_2042: finger 1 above the cube). 5.5 cm cube
     # (best in the size test), mass ~55 g by the same print estimate.
-    object_size = (0.055, 0.055, 0.055)
-    object_half_height = 0.0275
+    # v59 (user 2026-11-06: "make the object 50 mm", mass "30-50 g expected, just randomize it"): GL_CUBE_SIDE (m) and
+    # GL_CUBE_MASS_NOM (kg) set the cube edge and its spawn mass (defaults 0.055 / 0.055 as before)
+    object_size = (_GL_CUBE_SIDE, _GL_CUBE_SIDE, _GL_CUBE_SIDE)
+    object_half_height = _GL_CUBE_SIDE / 2
     object_cfg = JaxV2FrontGraspEnvCfg().object_cfg.replace(
         spawn=JaxV2FrontGraspEnvCfg().object_cfg.spawn.replace(
-            size=(0.055, 0.055, 0.055), mass_props=sim_utils.MassPropertiesCfg(mass=0.055)
+            size=(_GL_CUBE_SIDE, _GL_CUBE_SIDE, _GL_CUBE_SIDE), mass_props=sim_utils.MassPropertiesCfg(mass=_GL_CUBE_MASS_NOM)
         )
     )
     auto_lift = False
@@ -371,8 +376,9 @@ class JaxV2FrontPregraspEnv(JaxV2FrontGraspEnv):
     def _finger_plate_min_z(self) -> torch.Tensor:
         """Lowest world z of the finger 1/2 collision meshes (sampled vertices)."""
         if not hasattr(self, "_plate_pts"):
-            d = os.path.join(os.path.dirname(__file__), "../../../../isaaclab_assets/data/Robots/JaxV2Assembly1006")
-            root = ET.parse(os.path.join(d, "urdf/JAXV2_Assembly.urdf")).getroot()
+            _v3 = os.environ.get("GL_ROBOT", "") in ("v3", "v3m")  # v3: the V3 collision shapes
+            d = os.path.join(os.path.dirname(__file__), "../../../../isaaclab_assets/data/Robots/" + ("JaxV3Assembly1108" if _v3 else "JaxV2Assembly1006"))
+            root = ET.parse(os.path.join(d, "urdf/JAXV3_Assembly.urdf" if _v3 else "urdf/JAXV2_Assembly.urdf")).getroot()
             ids, pts = [], []
             for link in root.findall("link"):
                 name = link.get("name")
