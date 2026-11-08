@@ -337,6 +337,14 @@ class JaxV2FrontGraspCloseEnv(JaxV2FrontPregraspEnv):
                 # held ones at 7.3-8 N: the tilted distal pads pushed the cube out)
                 sf = sf.clamp_max(fmax); st = st.clamp_max(fmax)
             want = torch.where(all_on, torch.stack((0.5 * sf, 0.5 * sf, st), dim=1), torch.full_like(f, self.cfg.close_touch_n))
+        st_cfg = getattr(self.cfg, "close_settle", None)
+        if st_cfg:
+            # v68 probe (GL_CLOSE_SETTLE): time since all three digits first touched in this close; squeeze capped meanwhile
+            if not hasattr(self, "_settle_t"):
+                self._settle_t = torch.zeros(self.num_envs, device=self.device)
+            started = all_on[:, 0] | (self._settle_t > 0)
+            self._settle_t = torch.where(closing & started, self._settle_t + self.step_dt, torch.zeros_like(self._settle_t))
+            want = torch.where((self._settle_t < st_cfg[0])[:, None], want.clamp_max(st_cfg[1]), want)
         frac = getattr(self.cfg, "lift_wait_squeeze_frac", 0.0)
         if frac:
             # v43b: the lift gate opens only once every digit holds this share of its squeeze target

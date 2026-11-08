@@ -448,8 +448,9 @@ class JaxV2ArmRaiseEnv(JaxV2FrontPregraspEnv):
     def _hand_mesh_points(self) -> torch.Tensor:
         """Env-frame positions (N, P, 3) of sampled collision-mesh vertices of the hand and fingers."""
         if not hasattr(self, "_hm_pts"):
-            d = os.path.join(os.path.dirname(__file__), "../../../../isaaclab_assets/data/Robots/JaxV2Assembly1006")
-            root = ET.parse(os.path.join(d, "urdf/JAXV2_Assembly.urdf")).getroot()
+            _v3 = os.environ.get("GL_ROBOT", "") in ("v3", "v3m")  # v3: the V3 collision shapes
+            d = os.path.join(os.path.dirname(__file__), "../../../../isaaclab_assets/data/Robots/" + ("JaxV3Assembly1108" if _v3 else "JaxV2Assembly1006"))
+            root = ET.parse(os.path.join(d, "urdf/JAXV3_Assembly.urdf" if _v3 else "urdf/JAXV2_Assembly.urdf")).getroot()
             want = ("MG996R", "RotationBody", "Finger_1_1", "Finger_2_1", "Finger_3_1", "Finger_1_2", "Finger_2_2", "Finger_3_2")
             ids, pts = [], []
             for link in root.findall("link"):
@@ -953,8 +954,9 @@ class JaxV2RaiseCubeWideEnvCfg(JaxV2RaiseCubeEnvCfg):
         raise_shift_grid_path = "data/v41_basec.pt"
         raise_shift_grid_dzm3_path = "data/v41_m3c.pt"
         raise_shift_grid_dzp3_path = "data/v41_p3c.pt"
-        if os.environ.get("GL_GRID_SET"):  # v49: wider grids (see v2_front_grasp_lift)
-            _gs = os.environ["GL_GRID_SET"]
+        if os.environ.get("GL_GRID_SET") or os.environ.get("RAISE_GRID_SET"):  # v49: wider grids (see v2_front_grasp_lift)
+            # v65: RAISE_GRID_SET overrides the raise path's grid set (the grasp-lift start pose keeps GL_GRID_SET)
+            _gs = os.environ.get("RAISE_GRID_SET") or os.environ["GL_GRID_SET"]
             raise_shift_grid_path = f"data/{_gs}_basec.pt"
             raise_shift_grid_dzm3_path = f"data/{_gs}_m3c.pt"
             raise_shift_grid_dzp3_path = f"data/{_gs}_p3c.pt"

@@ -128,6 +128,22 @@ class OneArmJaxMinimalEnv(DirectRLEnv):
         self.wrist_id = self.robot.body_names.index(cfg.wrist_body_name)
         self.lower = self.robot.data.soft_joint_pos_limits[0, :, 0]
         self.upper = self.robot.data.soft_joint_pos_limits[0, :, 1]
+        import os as _os
+        if _os.environ.get("GL_ROBOT", "") in ("v3", "v3m") and not _os.environ.get("GL_OBS_LIM_OWN"):
+            # v3: the joint-position inputs keep the V2 (URDF_1006) normalization limits the policies were trained with
+            # (V3: shoulder roll 0..50 deg vs 0..45, elbow +/-100 vs +/-105); targets still clamp to the V3 limits
+            import xml.etree.ElementTree as _ET
+            _u = _os.path.join(_os.path.dirname(__file__), "../../../../isaaclab_assets/data/Robots/JaxV2Assembly1006/urdf/JAXV2_Assembly.urdf")
+            _lim = {j.get("name"): (float(j.find("limit").get("lower")), float(j.find("limit").get("upper")))
+                    for j in _ET.parse(_u).getroot().findall("joint") if j.find("limit") is not None}
+            self._obs_lo = self.lower.clone(); self._obs_hi = self.upper.clone()
+            for i, n in enumerate(self.robot.joint_names):
+                if n in _lim:
+                    self._obs_lo[i], self._obs_hi[i] = _lim[n]
+            # the cube-position inputs stay relative to the V2 base origin, which sits at (0.01, 0, 0.3625) in the V3 base frame
+            # (V3 base_link = the stand on the floor; shoulder pitch frame (-0.15, 0, 1.2125) vs V2 (-0.16, 0, 0.85)): without
+            # it the policy read the cube 0.363 m higher and curled fingers 1-2 at the cube (0% lifted)
+            self._obs_base_off = torch.tensor([-0.15 - (-0.16), 0.0, 1.2125 - 0.85], device=self.device)
         self.targets = self.robot.data.default_joint_pos.clone()
         self.actions = torch.zeros((self.num_envs, 11), device=self.device)
         self.previous_actions = torch.zeros_like(self.actions)

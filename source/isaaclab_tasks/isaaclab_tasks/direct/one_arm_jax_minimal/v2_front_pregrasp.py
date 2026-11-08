@@ -376,8 +376,9 @@ class JaxV2FrontPregraspEnv(JaxV2FrontGraspEnv):
     def _finger_plate_min_z(self) -> torch.Tensor:
         """Lowest world z of the finger 1/2 collision meshes (sampled vertices)."""
         if not hasattr(self, "_plate_pts"):
-            d = os.path.join(os.path.dirname(__file__), "../../../../isaaclab_assets/data/Robots/JaxV2Assembly1006")
-            root = ET.parse(os.path.join(d, "urdf/JAXV2_Assembly.urdf")).getroot()
+            _v3 = os.environ.get("GL_ROBOT", "") in ("v3", "v3m")  # v3: the V3 collision shapes
+            d = os.path.join(os.path.dirname(__file__), "../../../../isaaclab_assets/data/Robots/" + ("JaxV3Assembly1108" if _v3 else "JaxV2Assembly1006"))
+            root = ET.parse(os.path.join(d, "urdf/JAXV3_Assembly.urdf" if _v3 else "urdf/JAXV2_Assembly.urdf")).getroot()
             ids, pts = [], []
             for link in root.findall("link"):
                 name = link.get("name")

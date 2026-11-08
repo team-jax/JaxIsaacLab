@@ -124,6 +124,10 @@ class JaxV2FrontGraspLiftPPORunnerCfg(OneArmJaxMinimalPPORunnerCfg):
             self.algorithm.use_clipped_value_loss = False
         if os.environ.get("GL_LR"):
             self.algorithm.learning_rate = float(os.environ["GL_LR"])
+        # v71: GL_ENT - entropy coefficient (default 0.001); the exploration noise of the clipped actions kept growing under it
+        # (finger squeeze std 0.8 -> 1.55, hand x speed 3.9 -> 7.1 at 20875), so training saw near-random +/-1 commands
+        if os.environ.get("GL_ENT"):
+            self.algorithm.entropy_coef = float(os.environ["GL_ENT"])
 
 
 @configclass

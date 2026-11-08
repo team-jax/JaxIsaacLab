@@ -14,6 +14,12 @@ import os, json, math, torch, gymnasium as gym
 START_DX = float(os.environ.get("PROBE_START_DX", "0.02"))
 START_DY = float(os.environ.get("PROBE_START_DY", "0"))  # sideways start: the reach-in then moves diagonally
 END_DY = float(os.environ.get("PROBE_END_DY", "0"))  # sideways end (the pre-grasp the policy starts from)
+# v64: PROBE_STRAIGHT=1 moves the grid lookup point in a straight line from the start to the end lookup and re-reads the grid
+# every step (fingertip midpoint on a straight line, hand roll/pitch kept), instead of one joint-space step dq_in
+STRAIGHT = bool(os.environ.get("PROBE_STRAIGHT"))
+# v65: PROBE_FINAL_GRID=<set> - the env grid (GL_GRID_SET) is the raise grid (start = its last knot at the cube offset, use
+# PROBE_START_DX=0) and the reach-in ends at data/<set>_basec.pt looked up by the cube offset (baked turned approach)
+FINAL_GRID = os.environ.get("PROBE_FINAL_GRID", "")
 ROLL_AT_START = bool(os.environ.get("PROBE_ROLL_AT_START"))
 ROLL = math.radians(float(os.environ.get("PROBE_ROLL_DEG", "12")))  # diagnosis only: the policy starts rolled 12 deg
 os.environ["GL_CUBE_BOX"] = "1"
@@ -53,14 +59,29 @@ with torch.inference_mode():
     off = u._gl_cube_off.clone()
     W1 = grid_weights(gx, gy, off + off.new_tensor([-0.025, END_DY])); W0 = grid_weights(gx, gy, off + off.new_tensor([START_DX, START_DY]))
     dq_in = W1 @ G - W0 @ G
+    if FINAL_GRID:
+        import os as _os
+        _d = torch.load(_os.path.join("source/isaaclab_tasks/isaaclab_tasks/direct/one_arm_jax_minimal/data", f"{FINAL_GRID}_basec.pt"))
+        _gxf, _gyf, _Gf = _d["gx"].to(u.device), _d["gy"].to(u.device), _d["dq"][-1].reshape(-1, 8).to(u.device)
+        dq_in = grid_weights(_gxf, _gyf, off) @ _Gf - W0 @ G
     if not ROLL_AT_START:
         dq_in[:, 6] += ROLL
     base_tg = u.targets[:, arm].clone(); fg = u.targets[:, fids].clone()
     zero = torch.zeros(NE, u.single_action_space.shape[0], device=u.device)
     hold = lambda actions: None
+    q_w0 = W0 @ G
+    def dq_at(w):
+        if not STRAIGHT:
+            return w * dq_in
+        lk = off + off.new_tensor([START_DX, START_DY]) + w * off.new_tensor([-0.025 - START_DX, END_DY - START_DY])
+        d = grid_weights(gx, gy, lk) @ G - q_w0
+        if not ROLL_AT_START:
+            d[:, 6] += w * ROLL
+        return d
     def put(w):
+        dq_w = dq_at(w)
         def pre(actions):
-            u.targets[:, arm] = torch.minimum(torch.maximum(base_tg + w * dq_in, u.lower[arm]), u.upper[arm])
+            u.targets[:, arm] = torch.minimum(torch.maximum(base_tg + dq_w, u.lower[arm]), u.upper[arm])
             u.targets[:, fids] = fg
         return pre
     # settle 0.25 s at the start pose (the chain hands over a still arm), then the reach-in and a 0.25 s hold
@@ -92,7 +113,7 @@ with torch.inference_mode():
         w_, x_, y_, z_ = q.unbind(-1)
         return torch.rad2deg(torch.atan2(2 * (w_ * z_ + x_ * y_), 1 - 2 * (y_ * y_ + z_ * z_)))
     tip = (u.robot.data.body_pos_w[:, list(u.fingertip_ids)].mean(1) - u.object.data.root_pos_w)
-    print("PROBE", json.dumps({"start_dx": START_DX, "start_dy": START_DY, "end_dy": END_DY, "roll_deg": round(math.degrees(ROLL), 1), "roll_at_start": ROLL_AT_START, "reach_s": n_in / 60, "resets": resets}), flush=True)
+    print("PROBE", json.dumps({"start_dx": START_DX, "start_dy": START_DY, "end_dy": END_DY, "straight": STRAIGHT, "final_grid": FINAL_GRID, "roll_deg": round(math.degrees(ROLL), 1), "roll_at_start": ROLL_AT_START, "reach_s": n_in / 60, "resets": resets}), flush=True)
     for i, (dx, dy, yw) in enumerate(cases):
         top = int(fmax[i].argmax())
         print("CASE x%+.0f y%+.0f yaw%+.0f" % (dx * 100, dy * 100, yw),
