@@ -1,5 +1,9 @@
 <?xml version="1.0"?>
-<!-- JAXV3_Assembly (URDF_1108-2, 2026-11-08) prepared for the Isaac task (original: JAXV3_Assembly_original.urdf):
+<!-- JAXV3_Assembly (URDF_1109, 2026-11-09; before: URDF_1108-2) prepared for the Isaac task (originals: JAXV3_Assembly_1109_original.urdf,
+     JAXV3_Assembly_original.urdf = 1108). 1109 vs 1108: under_arm_to_wrist_pitch frame turned 180 deg about its x, so its rotation now
+     matches the task (V2) sign and on the 1109 robot only shoulder_roll_to_shoulder_yaw reads the negative of the task value; its origin
+     1 mm nearer (y 0.121797 -> 0.120797); masses, mesh geometry, collision files and the shoulder height are unchanged. This file keeps
+     the 1108 frame form (axis 0 0 -1 on that joint) with the 1109 origin. From 1108:
      link names without the exporter's "_1" suffix; mesh paths relative; ros2_control removed;
      shoulder_roll_to_shoulder_yaw and under_arm_to_wrist_pitch axes set to 0 0 -1 (limits negated) so joint angles keep the
      V2 (URDF_1006) sign convention used by the paths, lookup tables and policies - on the V3 robot / original URDF these two
@@ -406,7 +410,7 @@
   <joint name="under_arm_to_wrist_pitch" type="revolute">
     <parent link="Under_Arm" />
     <child link="Wrist_Pitch" />
-    <origin xyz="0.000000 0.121797 -0.024500" rpy="-1.570796 1.570796 0.000000" />
+    <origin xyz="0.000000 0.120797 -0.024500" rpy="-1.570796 1.570796 0.000000" />
     <axis xyz="0 0 -1" />
     <limit lower="-1.570796" upper="1.570796" effort="100.0" velocity="1.00" />
   </joint>

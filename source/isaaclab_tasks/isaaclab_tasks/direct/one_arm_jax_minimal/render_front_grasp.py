@@ -228,10 +228,13 @@ if args.raise_policy:
         GRAV = bool(os.environ.get("CHAIN_GRAV_COMP"))
         _sag_fix = torch.tensor([math.radians(v) for v in (1.9, 0.0, 0.0, 2.1, 0.0, 0.7, -0.2, 0.0)], device=u.device)
         _kp_arm = u.robot.data.joint_stiffness[:, arm].clamp_min(1e-3).clone()
+        # v73: CHAIN_GRAV_FULL=1 - the term at full weight from t = 0 (servo-mode emulation: a stiff arm with targets
+        # = geometric pose + tau_g / kp_actual sits exactly on the geometric pose, as a servo commanded the geometric pose)
+        GRAV_FULL = bool(os.environ.get("CHAIN_GRAV_FULL"))
         def _grav_corr(t):
             if not GRAV:
                 return 0.0
-            x = min(max(t - 4.0, 0.0), 1.0); w = x * x * (3.0 - 2.0 * x)
+            x = 1.0 if GRAV_FULL else min(max(t - 4.0, 0.0), 1.0); w = x * x * (3.0 - 2.0 * x)
             g = u.robot.root_physx_view.get_gravity_compensation_forces()[:, arm]
             return w * (g / _kp_arm - _sag_fix)
         rs_raw = {"tg": None}

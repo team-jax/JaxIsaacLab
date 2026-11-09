@@ -286,6 +286,10 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     # (-0.991, -0.125, 0.044)); shoulder yaw +7.2 and wrist pitch -2.6 deg make it (-1, 0, 0)
     # (artifacts/claude_scripts/v31_wrist_probe.py). Wrist yaw / forearm cannot: at the L they roll the hand.
     lift_return_q_deg = (1.9, 0.0, 7.2, 92.1, 0.0, -1.9, -0.2)
+    # v73 (user 2026-11-09: the real AK45 arm runs in servo mode - no gravity sag): GL_RET_Q_DEG="7 values" overrides the L
+    # target (servo: the geometric L 0, 0, 7.2, 90.0, 0, -2.6, 0 = the command above minus the fixed sag offsets)
+    if os.environ.get("GL_RET_Q_DEG"):
+        lift_return_q_deg = tuple(float(v) for v in os.environ["GL_RET_Q_DEG"].split(","))
     # v33 sensorless version (user 2026-11-04: pressure sensors not delivered; keep the sensor version and
     # build sim-to-real on a sensorless one). GL_NO_PAD=1: policy pad inputs read 0 and the balanced close
     # and lift_done use the grip force estimated from the finger drive torque instead of the pad forces.
