@@ -446,6 +446,8 @@ if args.raise_policy:
             u._lift_offset = torch.zeros_like(a7)
             if hasattr(u, "_bal_q"):
                 del u._bal_q
+            if getattr(u.cfg, "gl_obs_q_target", False):
+                u._tg_prev_step = u.targets.clone()  # v74: target-feedback velocity input starts at the handover
             if hasattr(u, "_gl_yaw_cnt"):
                 u._gl_yaw_cnt[:] = 0  # v70: the live cube-turn input (GL_OBS_YAW=2) takes its references from the handover
         qd = torch.rad2deg(u.robot.data.joint_pos[:, arm]); vd = torch.rad2deg(u.robot.data.joint_vel[:, arm])

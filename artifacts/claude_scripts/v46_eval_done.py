@@ -39,6 +39,31 @@ with torch.inference_mode():
     print("Z cube0_z", round(float(cube0[:, 2].mean() - u.scene.env_origins[:, 2].mean()), 4), "table_z", round(float(u.table.data.root_pos_w[:, 2].mean()), 4) if hasattr(u, "table") else None, flush=True)
     for k in range(round(float(os.environ.get("EVAL_S", "6.5")) * 60)):
         _act = pol(obs); obs, _, _, _ = env.step(_act)
+        if os.environ.get("FINGER_TQ"):  # v75: per-env max |drive torque| of the 6 finger joints and the 8 arm joints
+            if k == 0:
+                _ftq_max = torch.zeros((NE, len(u.finger_ids)), device=u.device); _atq_max = torch.zeros((NE, len(u.arm_ids)), device=u.device)
+                _ftq_hold = torch.zeros((NE, len(u.finger_ids)), device=u.device); _ftq_n = torch.zeros(NE, device=u.device)
+                _asat = torch.zeros((NE, len(u.arm_ids)), device=u.device); _fsat = torch.zeros((NE, len(u.finger_ids)), device=u.device); _nsat = 0
+            # v77: share of steps whose drive demand (PD torque before the PhysX clip) reaches the joint's effort limit
+            _aid = list(u.arm_ids); _fid = list(u.finger_ids); _nsat += 1
+            _asat += (u.robot.data.applied_torque[:, _aid].abs() >= 0.97 * u.robot.data.joint_effort_limits[:, _aid]).float()
+            _fsat += (u.robot.data.applied_torque[:, _fid].abs() >= 0.97 * u.robot.data.joint_effort_limits[:, _fid]).float()
+            # v77c: thumb chain (RotationBody, thumb 1st, thumb tip) - angle drift from the return start and |angle - target|
+            # during the return, and when the cube (once up 4 cm) fell back, in return seconds (-1 = before the return)
+            _tj = [_aid[7], _fid[2], _fid[5]]; _qn = u.robot.data.joint_pos[:, _tj]; _on = u._ret_t >= 0 if hasattr(u, "_ret_t") else torch.zeros(NE, dtype=torch.bool, device=u.device)
+            if k == 0:
+                _tq0 = _qn.clone(); _tdrift = torch.zeros((NE, 3), device=u.device); _terr = torch.zeros((NE, 3), device=u.device); _won = torch.zeros(NE, dtype=torch.bool, device=u.device)
+                _was_up = torch.zeros(NE, dtype=torch.bool, device=u.device); _drop_rt = torch.full((NE,), -9.0, device=u.device)
+            _tq0 = torch.where((_on & ~_won)[:, None], _qn, _tq0); _won = _on
+            _tdrift = torch.where(_on[:, None], torch.maximum(_tdrift, (_qn - _tq0).abs()), _tdrift)
+            _terr = torch.where(_on[:, None], torch.maximum(_terr, (_qn - u.targets[:, _tj]).abs()), _terr)
+            _upn = (u.object.data.root_pos_w[:, 2] - cube0[:, 2]) > 0.04
+            _fell = _was_up & ~_upn & (_drop_rt < -5)
+            _drop_rt = torch.where(_fell, torch.where(_on, u._ret_t if hasattr(u, "_ret_t") else -1.0, torch.full_like(_drop_rt, -1.0)), _drop_rt); _was_up |= _upn
+            _ft = torch.minimum(u.robot.data.applied_torque[:, list(u.finger_ids)].abs(), u.robot.data.joint_effort_limits[:, list(u.finger_ids)]); _ftq_max = torch.maximum(_ftq_max, _ft)  # PhysX clips at the effort limit
+            _atq_max = torch.maximum(_atq_max, u.robot.data.applied_torque[:, list(u.arm_ids)].abs())
+            _hold_now = ((u.object.data.root_pos_w[:, 2] - cube0[:, 2]) > 0.04).float()
+            _ftq_hold += _ft * _hold_now[:, None]; _ftq_n += _hold_now
         tmax = torch.maximum(tmax, u._table_force)
         rmax = torch.maximum(rmax, u.object.data.root_pos_w[:, 2] - cube0[:, 2])
         ret_ever |= (u._ret_t >= 0)
@@ -144,6 +169,20 @@ try:
 except Exception as _e:
     print("FINGERQ err", repr(_e), flush=True)
 print("HELD done_and_still_lifted_at_end %.3f" % float((u.lift_done & (rise > 0.04)).float().mean()), flush=True)
+if os.environ.get("FINGER_TQ"):
+    _q = lambda t, a: [round(float(v), 3) for v in torch.quantile(t, a, dim=0)]
+    print("FINGER_TQ order (f1_1, f2_1, th_1, f1_2, f2_2, th_2) N*m | per-env max over the episode: median %s p95 %s max %s" % (_q(_ftq_max, 0.5), _q(_ftq_max, 0.95), [round(float(v), 3) for v in _ftq_max.amax(0)]), flush=True)
+    _hm3 = _ftq_n > 0
+    print("FINGER_TQ_HOLD mean |torque| while the cube is >4 cm up, median over envs %s p95 %s" % (_q((_ftq_hold / _ftq_n.clamp_min(1.0)[:, None])[_hm3], 0.5), _q((_ftq_hold / _ftq_n.clamp_min(1.0)[:, None])[_hm3], 0.95)), flush=True)
+    print("ARM_TQ order (sh_pitch, roll, yaw, elbow, forearm, wr_pitch, wr_yaw, rotbody) per-env max: median %s max %s" % (_q(_atq_max, 0.5), [round(float(v), 3) for v in _atq_max.amax(0)]), flush=True)
+    _okm = u.lift_done & (rise > 0.04); _r = lambda t, m: [round(float(v), 3) for v in (t[m] / _nsat).mean(0)] if m.any() else None
+    print("ARM_LIMIT", [round(float(v), 3) for v in u.robot.data.joint_effort_limits[0, list(u.arm_ids)]], "FINGER_LIMIT", round(float(u.robot.data.joint_effort_limits[0, list(u.finger_ids)][0]), 3), flush=True)
+    print("ARM_SAT share of steps at the limit, Isaac 0,1,2,3,4,5,6,9 | held envs %s | failed envs %s (n %d)" % (_r(_asat, _okm), _r(_asat, ~_okm), int((~_okm).sum())), flush=True)
+    print("FINGER_SAT (f1_1, f2_1, th_1, f1_2, f2_2, th_2) | held envs %s | failed envs %s" % (_r(_fsat, _okm), _r(_fsat, ~_okm)), flush=True)
+    _d = lambda t, m: [round(float(v) * 57.2958, 1) for v in t[m].mean(0)] if m.any() else None
+    print("THUMB_RET (RotationBody, th_1, th_2) deg, max over the return | drift from return start: held %s failed %s | |q - target|: held %s failed %s" % (_d(_tdrift, _okm & _won), _d(_tdrift, ~_okm & _won), _d(_terr, _okm & _won), _d(_terr, ~_okm & _won)), flush=True)
+    _dr = _drop_rt[_drop_rt > -5]
+    print("DROP_AT n %d | before the return %d | return s: %s" % (int(len(_dr)), int((_dr < 0).sum()), [round(float(v), 2) for v in torch.quantile(_dr[_dr >= 0], torch.tensor([0.1, 0.5, 0.9], device=u.device))] if (_dr >= 0).sum() > 0 else None), flush=True)
 try:
     _hm = u.lift_done & (rise > 0.04); _pp = u.pad_forces()[:, :3]
     print("PROX held_end_first_joint_N %s sum %.3f" % ([round(float(v), 3) for v in _pp[_hm].mean(0)] if _hm.any() else None, float(_pp[_hm].sum(1).mean()) if _hm.any() else 0.0), flush=True)

@@ -343,6 +343,14 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
         object_cfg = JaxV2FrontLiftRLEnvCfg().object_cfg.replace(
             spawn=JaxV2FrontLiftRLEnvCfg().object_cfg.spawn.replace(physics_material=_mat))
         sim = JaxV2FrontLiftRLEnvCfg().sim.replace(physics_material=_mat)
+    # v77 (user 2026-11-10: "cube friction 2.0 - the cube only"): GL_CUBE_MU="static,dynamic" sets the cube's own material
+    # after GL_MU (the robot keeps GL_MU, the table its 1.2/1.0). PhysX averages the two materials of a contact, so
+    # finger-cube = (cube + robot) / 2 (2.0 with 0.4 -> 1.2) and cube-table = (cube + 1.2) / 2 (2.0 -> 1.6).
+    if os.environ.get("GL_CUBE_MU"):
+        _cmu = [float(v) for v in os.environ["GL_CUBE_MU"].split(",")]
+        _cmat = sim_utils.RigidBodyMaterialCfg(static_friction=_cmu[0], dynamic_friction=_cmu[1], restitution=0.0)
+        _ocfg = object_cfg if "object_cfg" in locals() else JaxV2FrontLiftRLEnvCfg().object_cfg
+        object_cfg = _ocfg.replace(spawn=_ocfg.spawn.replace(physics_material=_cmat))
     # v36: squeeze total = close_squeeze_n + close_squeeze_range_n x action 7; GL_SQUEEZE="base,range" (N), and
     # GL_FIRST_MAX="f1,f2,thumb" (deg) the first-joint close limits (the thumb stopped at 0 deg short of the force)
     if os.environ.get("GL_SQUEEZE"):
@@ -436,13 +444,20 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     close_rl_grip = bool(os.environ.get("GL_FINGER_RL"))
     close_rl_force_base_n = 5.0
     close_rl_force_range_n = 4.0
+    # v76 (user 2026-11-10: the finger servos are MG90S, 0.177 N*m stall -> about 1.6 N at the distal pad; 5 + 4 a asked for
+    # 1-9 N, almost all out of reach, and fingers 1+2 out-pushed the thumb): GL_RL_FORCE="base,range" (N) overrides the squeeze
+    # mapping S = base + range x action (actions 7 fingers-side total, 9 thumb)
+    if os.environ.get("GL_RL_FORCE"):
+        close_rl_force_base_n, close_rl_force_range_n = [float(v) for v in os.environ["GL_RL_FORCE"].split(",")]
     close_rl_curl_deg = 60.0
     close_rl_force_max_n = float(os.environ["GL_RL_FORCE_MAX"]) if os.environ.get("GL_RL_FORCE_MAX") else None  # v47b
     # v48 (user 2026-11-04: "the first joint should sit fully on the cube", "grip deeper"): GL_PROX=scale rewards the
     # first-joint (proximal) pads on the cube while the distal grip holds: scale x sum over the 3 pads of
     # min(force / gl_prox_sat_n, 1). With the hand 1.5 cm deeper the trained policy let them go (0.2-0.5 -> 0.02-0.3 N).
     gl_prox_scale = float(os.environ.get("GL_PROX", "0"))
-    gl_prox_sat_n = 0.5
+    # v78 (2026-11-10, MG90S fingers): GL_PROX_SAT (N) - the first-joint pad force that earns the full prox reward (default
+    # 0.5); 25150 under the motor limits pressed the first links at 0.002-0.05 N each, far below the 0.5 N saturation
+    gl_prox_sat_n = float(os.environ.get("GL_PROX_SAT", "0.5"))
     # v48e: GL_PROX_MIN=k adds k x 3 x min over the 3 first-joint pads of min(F / gl_prox_sat_n, 1): the sum alone let one
     # finger carry it (v48d 11925 at lift_done: 0.17 / 1.04 / 0.00 N, thumb off; v48c 11750: 0.13 / 0.45 / 0.34 N)
     gl_prox_min_scale = float(os.environ.get("GL_PROX_MIN", "0"))
@@ -477,6 +492,16 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     # (dynamic = static - 0.05), so the cube-finger contact uses it as is; v48i2 12750 (trained at 0.4/0.35) held 99.3%
     # at 0.4 but 93.8% at 0.35/0.3
     gl_mu_rand = tuple(float(v) for v in os.environ["GL_MU_RAND"].split(",")) if os.environ.get("GL_MU_RAND") else None
+    # v77: GL_CUBE_MU_RAND="lo,hi" - per-episode cube static friction (dynamic 0.05 lower), cube only, applied after
+    # GL_MU_RAND (which keeps drawing the robot's); harsh episodes draw it from gl_harsh_cube_mu
+    gl_cube_mu_rand = tuple(float(v) for v in os.environ["GL_CUBE_MU_RAND"].split(",")) if os.environ.get("GL_CUBE_MU_RAND") else None
+    gl_harsh_cube_mu = (1.5, 1.7)
+    # v77b (user 2026-11-10: "the fingers 2.0 too"): GL_FINGER_MU="static,dynamic" sets every Finger_* link's shapes at each
+    # reset (after GL_MU_RAND, which still draws the rest of the robot); GL_FINGER_MU_RAND="lo,hi" draws it per episode instead
+    # (dynamic 0.05 lower, harsh episodes from gl_harsh_finger_mu). Finger 2.0 with cube 2.0 -> finger-cube 2.0.
+    gl_finger_mu = tuple(float(v) for v in os.environ["GL_FINGER_MU"].split(",")) if os.environ.get("GL_FINGER_MU") else None
+    gl_finger_mu_rand = tuple(float(v) for v in os.environ["GL_FINGER_MU_RAND"].split(",")) if os.environ.get("GL_FINGER_MU_RAND") else None
+    gl_harsh_finger_mu = (1.5, 1.7)
     # v50 (sim-to-real checks, all off by default): GL_ACT_DELAY=k - policy actions take effect k control steps late;
     # GL_KP_SCALE="lo,hi" - arm and finger drive stiffness and damping x U(lo, hi) per episode (the gravity hold keeps
     # using the nominal kp, as a real controller that does not know the servo gains would); GL_CUBE_MASS="lo,hi" - cube
@@ -487,6 +512,22 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     gl_kp_scale = tuple(float(v) for v in os.environ["GL_KP_SCALE"].split(",")) if os.environ.get("GL_KP_SCALE") else None
     # v54 diagnosis: GL_KP_PART=arm|finger applies the GL_KP_SCALE draw to that group only (default: all joints)
     gl_kp_part = os.environ.get("GL_KP_PART", "all")
+    # v74 (user 2026-11-09: the real AK45 arm runs in servo mode): GL_SERVO_ARM="lo,hi" - per episode the arm drives (7 arm
+    # joints + RotationBody) get kp / kd x U(lo, hi) after any GL_KP_SCALE draw (fingers keep that draw), and the start-pose
+    # hold uses the ACTUAL kp, so the stiff arm sits exactly on the geometric pose like a servo commanded that pose
+    gl_servo_arm = tuple(float(v) for v in os.environ["GL_SERVO_ARM"].split(",")) if os.environ.get("GL_SERVO_ARM") else None
+    # v74 (user 2026-11-09: "our feedback is the target angle we send, not the encoder"): GL_OBS_Q_TARGET=1 - the policy's
+    # joint inputs read the sent joint targets (obs 0-13) and their change over the control step / dt (obs 14-27, x 0.2)
+    # instead of the measured joint positions and velocities
+    gl_obs_q_target = bool(os.environ.get("GL_OBS_Q_TARGET"))
+    # v75 (teammate 2026-11-10: the sim fingers had a 100 N*m torque limit - real MG996R hobby servos stall near 0.9 N*m at
+    # 4.8 V, 1.1 N*m at 6 V; the thumb first joint held 0.82 N*m median / 1.35 p95 while lifting): GL_FINGER_EFFORT="lo,hi"
+    # (N*m) - per episode the 6 finger joints get a PhysX max drive torque from U(lo, hi) ("x" or "x,x" fixed)
+    gl_finger_effort = tuple(float(v) for v in os.environ["GL_FINGER_EFFORT"].split(",")) if os.environ.get("GL_FINGER_EFFORT") else None
+    # v76 (user 2026-11-10: match the real motors' torque limits - AK45-36 rated 8 / peak 24 N*m): GL_ARM_EFFORT="8 values" (N*m,
+    # arm group order: shoulder pitch, roll, yaw, elbow, forearm roll, wrist pitch, wrist yaw, RotationBody) - PhysX max drive
+    # torque per arm joint, fixed
+    gl_arm_effort = tuple(float(v) for v in os.environ["GL_ARM_EFFORT"].split(",")) if os.environ.get("GL_ARM_EFFORT") else None
     gl_cube_mass = tuple(float(v) for v in os.environ["GL_CUBE_MASS"].split(",")) if os.environ.get("GL_CUBE_MASS") else None
     # v66: GL_HARSH_FRAC=f - that share of episodes draws friction, drive gains, cube mass and action delay together from their
     # harsh ends (the combined case was the weakest: each was drawn alone from its full range, so all at once was rare)
@@ -602,6 +643,8 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
         return obs
 
     def _pre_physics_step(self, actions):
+        if self.cfg.gl_obs_q_target:
+            self._tg_prev_step = self.targets.clone()  # v74: the targets sent during the last control step
         lo, hi = self.cfg.gl_act_delay
         if hi > 0:
             # v50: actions take effect d control steps late, d per env in [lo, hi] (drawn at reset)
@@ -644,6 +687,40 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             if not hasattr(self, "_gl_mu"):
                 self._gl_mu = torch.zeros(self.num_envs)
             self._gl_mu[ids_cpu] = mu_s
+        if c.gl_cube_mu_rand:
+            ids_cpu = ids.detach().cpu() if torch.is_tensor(ids) else torch.as_tensor(ids)
+            mu_c = torch.empty(len(ids_cpu)).uniform_(c.gl_cube_mu_rand[0], c.gl_cube_mu_rand[1])
+            if hm is not None:
+                mu_c = torch.where(hm.cpu(), torch.empty(len(ids_cpu)).uniform_(c.gl_harsh_cube_mu[0], c.gl_harsh_cube_mu[1]), mu_c)
+            mats = self.object.root_physx_view.get_material_properties()
+            mats[ids_cpu, :, 0] = mu_c[:, None]
+            mats[ids_cpu, :, 1] = (mu_c - 0.05).clamp_min(0.05)[:, None]
+            self.object.root_physx_view.set_material_properties(mats, ids_cpu)
+        if c.gl_finger_mu or c.gl_finger_mu_rand:
+            if not hasattr(self, "_finger_shape_idx"):
+                counts, names = [], []
+                for lp in self.robot.root_physx_view.link_paths[0]:
+                    counts.append(self.robot._physics_sim_view.create_rigid_body_view(lp).max_shapes); names.append(lp.split("/")[-1])
+                assert sum(counts) == self.robot.root_physx_view.max_shapes, (counts, self.robot.root_physx_view.max_shapes)
+                idx = []
+                for k, nm in enumerate(names):
+                    if nm.lower().startswith("finger"):
+                        idx += list(range(sum(counts[:k]), sum(counts[:k]) + counts[k]))
+                self._finger_shape_idx = torch.tensor(idx, dtype=torch.long)
+                print("GL_FINGER_MU links", [nm for nm in names if nm.lower().startswith("finger")], "shapes", len(idx), "of", sum(counts), flush=True)
+            ids_cpu = ids.detach().cpu() if torch.is_tensor(ids) else torch.as_tensor(ids)
+            if c.gl_finger_mu_rand:
+                mu_f = torch.empty(len(ids_cpu)).uniform_(c.gl_finger_mu_rand[0], c.gl_finger_mu_rand[1])
+                if hm is not None:
+                    mu_f = torch.where(hm.cpu(), torch.empty(len(ids_cpu)).uniform_(c.gl_harsh_finger_mu[0], c.gl_harsh_finger_mu[1]), mu_f)
+                mu_fd = (mu_f - 0.05).clamp_min(0.05)
+            else:
+                mu_f = torch.full((len(ids_cpu),), c.gl_finger_mu[0]); mu_fd = torch.full((len(ids_cpu),), c.gl_finger_mu[1])
+            mats = self.robot.root_physx_view.get_material_properties()
+            fi = self._finger_shape_idx[None, :]
+            mats[ids_cpu[:, None], fi, 0] = mu_f[:, None]
+            mats[ids_cpu[:, None], fi, 1] = mu_fd[:, None]
+            self.robot.root_physx_view.set_material_properties(mats, ids_cpu)
         if c.gl_kp_scale:
             if not hasattr(self, "_kp_nom"):
                 self._kp_nom = self.robot.data.joint_stiffness.clone(); self._kd_nom = self.robot.data.joint_damping.clone()
@@ -656,6 +733,24 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
                 ks = torch.where(sel[None, :], ks, torch.ones_like(ks))
             self.robot.write_joint_stiffness_to_sim(self._kp_nom[ids] * ks, env_ids=ids)
             self.robot.write_joint_damping_to_sim(self._kd_nom[ids] * ks, env_ids=ids)
+        if c.gl_arm_effort:
+            # v76: arm motor torque limits (see the cfg)
+            ae = torch.tensor(c.gl_arm_effort, device=self.device)[None, :].expand(n, -1).contiguous()
+            self.robot.write_joint_effort_limit_to_sim(ae, joint_ids=list(self.arm_ids), env_ids=ids)
+        if c.gl_finger_effort:
+            # v75: finger servo torque limit (see the cfg)
+            fe = torch.empty((n, 1), device=self.device).uniform_(c.gl_finger_effort[0], c.gl_finger_effort[-1]).expand(-1, len(self.finger_ids)).contiguous()
+            self.robot.write_joint_effort_limit_to_sim(fe, joint_ids=list(self.finger_ids), env_ids=ids)
+        if c.gl_servo_arm:
+            # v74: servo-mode arm (see the cfg): stiffer arm drives, held at the actual kp below
+            if not hasattr(self, "_kp_nom"):
+                self._kp_nom = self.robot.data.joint_stiffness.clone(); self._kd_nom = self.robot.data.joint_damping.clone()
+            sa = torch.empty((n, 1), device=self.device).uniform_(c.gl_servo_arm[0], c.gl_servo_arm[1])
+            arm_all = list(self.arm_ids)
+            st = self.robot.data.joint_stiffness[ids].clone(); dp = self.robot.data.joint_damping[ids].clone()
+            st[:, arm_all] = self._kp_nom[ids][:, arm_all] * sa; dp[:, arm_all] = self._kd_nom[ids][:, arm_all] * sa
+            self.robot.write_joint_stiffness_to_sim(st, env_ids=ids)
+            self.robot.write_joint_damping_to_sim(dp, env_ids=ids)
         if c.gl_cube_mass:
             ids_c = ids.detach().cpu() if torch.is_tensor(ids) else torch.as_tensor(ids)
             ms = self.object.root_physx_view.get_masses()
@@ -811,11 +906,16 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             # offsets fit the old layout's pre-grasp; elsewhere they over- or under-shot and the arm drifted, 4-11 mm up
             # in the 22.5 cm table layout, which the policy fought by pressing the cube down and rolling it)
             grav = self.robot.root_physx_view.get_gravity_compensation_forces()[ids][:, arm]
-            kp = (self.robot.data.joint_stiffness if c.gl_grav_comp_actual_kp else (self._kp_nom if hasattr(self, "_kp_nom") else self.robot.data.joint_stiffness))[ids][:, arm].clamp_min(1e-3)
+            kp = (self.robot.data.joint_stiffness if (c.gl_grav_comp_actual_kp or c.gl_servo_arm) else (self._kp_nom if hasattr(self, "_kp_nom") else self.robot.data.joint_stiffness))[ids][:, arm].clamp_min(1e-3)
             tg8 = q8 + grav / kp
             targets[:, arm] = tg8
             self.targets[ids] = targets
         self.robot.set_joint_position_target(targets, env_ids=ids)
+        if c.gl_obs_q_target:
+            # v74: the target-feedback velocity input starts at 0 for a fresh episode
+            if not hasattr(self, "_tg_prev_step"):
+                self._tg_prev_step = self.targets.clone()
+            self._tg_prev_step[ids] = self.targets[ids]
         # the episode starts at the close; holds latch to these targets
         self.episode_length_buf[ids] = round(c.close_after_s / self.step_dt)
         # create the holds here: created lazily in the first step they would latch the

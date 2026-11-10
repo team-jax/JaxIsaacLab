@@ -1,0 +1,33 @@
+== RETURN_S=4.0
+SPLIT on_table(before 1cm): tilt 2.9 yaw 1.0 | lifting: tilt 3.5 yaw 1.4 (deg, max, lifted envs mean)
+FAIL n_not_done 87 | of them: return_started 0.68, max_rise_mm mean 81.5, rise<50mm 0.28, grip_lost_after_ret 0.68, end_rise_mm 33.9
+DONE_T mean 6.64 p90 6.87 max 10.65 (s after close start)
+DONE lift_done_frac 0.849
+HELD done_and_still_lifted_at_end 0.845
+FINGER_TQ order (f1_1, f2_1, th_1, f1_2, f2_2, th_2) N*m | per-env max over the episode: median [0.177, 0.177, 0.177, 0.177, 0.177, 0.177] p95 [0.177, 0.177, 0.177, 0.177, 0.177, 0.177] max [0.177, 0.177, 0.177, 0.177, 0.177, 0.177]
+FINGER_TQ_HOLD mean |torque| while the cube is >4 cm up, median over envs [0.078, 0.088, 0.1, 0.009, 0.005, 0.177] p95 [0.175, 0.177, 0.177, 0.066, 0.028, 0.177]
+ARM_TQ order (sh_pitch, roll, yaw, elbow, forearm, wr_pitch, wr_yaw, rotbody) per-env max: median [0.336, 0.166, 0.294, 0.371, 0.565, 0.861, 2.827, 4.842] max [3.485, 6.071, 4.613, 4.816, 7.798, 9.171, 13.324, 20.861]
+ARM_LIMIT [8.0, 8.0, 8.0, 8.0, 3.92, 1.96, 0.92, 0.177] FINGER_LIMIT 0.177
+ARM_SAT share of steps at the limit, Isaac 0,1,2,3,4,5,6,9 | held envs [0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.022, 0.751] | failed envs [0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.047, 0.324] (n 89)
+FINGER_SAT (f1_1, f2_1, th_1, f1_2, f2_2, th_2) | held envs [0.195, 0.229, 0.334, 0.012, 0.007, 0.897] | failed envs [0.182, 0.124, 0.14, 0.044, 0.019, 0.461]
+PROX held_end_first_joint_N [0.007, 0.08, 0.026] sum 0.113
+PROX_LIFT mean_first_joint_N_while_lifting [0.001, 0.019, 0.003] sum 0.023
+PROX_DONE first_joint_N_at_lift_done [0.006, 0.05, 0.039] sum 0.095
+PROBE_DONE
+== RETURN_A7=1.0
+SPLIT on_table(before 1cm): tilt 2.6 yaw 1.0 | lifting: tilt 3.2 yaw 1.5 (deg, max, lifted envs mean)
+FAIL n_not_done 58 | of them: return_started 0.59, max_rise_mm mean 70.2, rise<50mm 0.41, grip_lost_after_ret 0.59, end_rise_mm 17.5
+DONE_T mean 5.18 p90 5.42 max 11.27 (s after close start)
+DONE lift_done_frac 0.899
+HELD done_and_still_lifted_at_end 0.894
+FINGER_TQ order (f1_1, f2_1, th_1, f1_2, f2_2, th_2) N*m | per-env max over the episode: median [0.177, 0.177, 0.177, 0.177, 0.177, 0.177] p95 [0.177, 0.177, 0.177, 0.177, 0.177, 0.177] max [0.177, 0.177, 0.177, 0.177, 0.177, 0.177]
+FINGER_TQ_HOLD mean |torque| while the cube is >4 cm up, median over envs [0.094, 0.114, 0.157, 0.008, 0.002, 0.177] p95 [0.174, 0.176, 0.177, 0.044, 0.029, 0.177]
+ARM_TQ order (sh_pitch, roll, yaw, elbow, forearm, wr_pitch, wr_yaw, rotbody) per-env max: median [0.338, 0.176, 0.336, 0.4, 0.604, 0.956, 3.214, 5.09] max [2.417, 5.017, 11.339, 6.302, 9.089, 9.982, 22.132, 28.19]
+ARM_LIMIT [8.0, 8.0, 8.0, 8.0, 3.92, 1.96, 0.92, 0.177] FINGER_LIMIT 0.177
+ARM_SAT share of steps at the limit, Isaac 0,1,2,3,4,5,6,9 | held envs [0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.027, 0.78] | failed envs [0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.038, 0.235] (n 61)
+FINGER_SAT (f1_1, f2_1, th_1, f1_2, f2_2, th_2) | held envs [0.303, 0.353, 0.569, 0.011, 0.006, 0.901] | failed envs [0.09, 0.075, 0.092, 0.039, 0.017, 0.368]
+PROX held_end_first_joint_N [0.002, 0.023, 0.132] sum 0.158
+PROX_LIFT mean_first_joint_N_while_lifting [0.003, 0.012, 0.001] sum 0.016
+PROX_DONE first_joint_N_at_lift_done [0.002, 0.022, 0.134] sum 0.158
+PROBE_DONE
+ALL_PROBES_DONE
