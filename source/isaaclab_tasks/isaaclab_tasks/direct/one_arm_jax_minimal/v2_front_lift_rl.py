@@ -222,6 +222,29 @@ class JaxV2FrontLiftRLEnv(JaxV2FrontLiftEnv):
         if not hasattr(self, "_ret_a810"):
             self._ret_a810 = self.actions[:, 8:11].clone()
         self._ret_a810 = torch.where(start[:, None], self.actions[:, 8:11], self._ret_a810)
+        ry = getattr(c, "ret_yaw", None)
+        if ry is not None:
+            # v79 (GL_RET_YAW): shoulder-yaw offset of this return, latched at its start
+            if not hasattr(self, "_ret_yaw"):
+                self._ret_yaw = torch.zeros(self.num_envs, device=self.device)
+            est = self._gl_yaw_rel + (self._gl_twist_delta(capture=False) if hasattr(self, "_gl_twist_delta") and hasattr(self, "_gl_yaw_cnt") else 0.0)
+            if len(ry) > 2 and ry[2] > 0:
+                # v80: "live" - the cube's turn re-measured at the return start (a top camera seeing the lifted cube): + the cube's turn
+                # minus the hand's turn about world z since the first lifting step (pre-grasp, before contact)
+                from isaaclab.utils.math import quat_conjugate as _qc, quat_mul as _qm
+                cq = self.object.data.root_quat_w; hq = self.robot.data.body_quat_w[:, self._hand_id]
+                if not hasattr(self, "_ry_c0"):
+                    self._ry_c0 = cq.clone(); self._ry_h0 = hq.clone(); self._ry_prev = torch.zeros_like(lifting)
+                first = lifting & ~self._ry_prev
+                self._ry_c0 = torch.where(first[:, None], cq, self._ry_c0); self._ry_h0 = torch.where(first[:, None], hq, self._ry_h0)
+                self._ry_prev = lifting.clone()
+                _w = lambda a_: torch.remainder(a_ + math.pi, 2.0 * math.pi) - math.pi
+                _tw = lambda q_: _w(2.0 * torch.atan2(q_[:, 3], q_[:, 0]))
+                est = self._gl_yaw_rel + _w(_tw(_qm(cq, _qc(self._ry_c0))) - _tw(_qm(hq, _qc(self._ry_h0))))
+            al = torch.remainder(est + math.radians(ry[0]) + math.pi / 4, math.pi / 2) - math.pi / 4
+            if len(ry) > 1:
+                al = al.clamp(-math.radians(ry[1]), math.radians(ry[1]))
+            self._ret_yaw = torch.where(start, al, self._ret_yaw)
         self._ret_t = torch.where(start, 0.0, self._ret_t)
         self._ret_t = torch.where(lifting, self._ret_t, -1.0)
         on = self._ret_t >= 0
@@ -229,6 +252,8 @@ class JaxV2FrontLiftRLEnv(JaxV2FrontLiftEnv):
             qL = self.targets.new_tensor([math.radians(v) for v in c.lift_return_q_deg])
             x = (self._ret_t / c.lift_return_s).clamp(0.0, 1.0)
             w = (x * x * (3.0 - 2.0 * x))[:, None]
+            if ry is not None:
+                qL = qL.expand(self.num_envs, -1).clone(); qL[:, 2] = qL[:, 2] + self._ret_yaw
             tg = self._ret_q0 + w * (qL - self._ret_q0)
             self.targets[:, arm] = torch.where(on[:, None], tg, self.targets[:, arm])
             self._ret_tg = tg
@@ -304,6 +329,22 @@ class JaxV2FrontLiftRLEnv(JaxV2FrontLiftEnv):
             ang = c.lift_ik_pitch_rate * self.step_dt * a[:, 6] * gate
             axis = torch.zeros((self.num_envs, 3), device=self.device); axis[:, 1] = 1.0
             self._ik_q0 = quat_mul(quat_from_angle_axis(ang, axis), self._ik_q0)
+        pre = getattr(c, "pre_yaw", None)
+        if pre:
+            # v79 (GL_PRE_YAW): on the first lifting step the held hand orientation turns about world z by the measured cube
+            # turn relative to the hand (folded to +/-45 deg, capped); the IK turns the hand there around the grasp point
+            # (position target held) while the close waits; the lift commands act after pre[0] s of the close
+            if not hasattr(self, "_pre_yaw_on"):
+                self._pre_yaw_on = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            new = lifting & ~self._pre_yaw_on
+            if bool(new.any()) and hasattr(self, "_gl_yaw_rel"):
+                psi = torch.remainder(self._gl_yaw_rel + math.pi / 4, math.pi / 2) - math.pi / 4
+                psi = psi.clamp(-math.radians(pre[1]), math.radians(pre[1])) * new.float()
+                zax = torch.zeros((self.num_envs, 3), device=self.device); zax[:, 2] = 1.0
+                self._ik_q0 = quat_mul(quat_from_angle_axis(psi, zax), self._ik_q0)
+            self._pre_yaw_on = lifting.clone()
+            tc = self.episode_length_buf * self.step_dt - c.close_after_s
+            gate = gate * (tc >= pre[0]).float()
         v = torch.stack((c.lift_ik_vxy * a[:, 3], c.lift_ik_vxy * a[:, 5], -c.lift_ik_vz * a[:, 0]), dim=1) * gate[:, None]
         if getattr(c, "lift_ik_no_down", False):
             # v41d: no downward hand command (pressing the fingers down on the cube rolled it 12-14 deg on the table)

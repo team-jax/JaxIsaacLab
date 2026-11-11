@@ -353,6 +353,12 @@ class JaxV2FrontGraspCloseEnv(JaxV2FrontPregraspEnv):
         dmax = self.cfg.close_speed_rad_s * self.step_dt
         step = (self.cfg.close_gain_rad_per_n * (want - f)).clamp(-dmax, dmax)
         step = torch.where(on, step, torch.full_like(step, dmax))
+        pre = getattr(self.cfg, "pre_yaw", None)
+        pre_wait = None
+        if pre:
+            # v79 (GL_PRE_YAW): the fingers stay open while the hand turns to the cube
+            pre_wait = (self.episode_length_buf * self.step_dt - self.cfg.close_after_s < pre[0])[:, None]
+            step = torch.where(pre_wait, torch.zeros_like(step), step)
         q_max = self._bal_max.expand(self.num_envs, -1).clone()
         if self.cfg.close_thumb_max_range_deg:
             q_max[:, 2] = q_max[:, 2] + math.radians(self.cfg.close_thumb_max_range_deg) * self.actions[:, 8]
@@ -369,6 +375,8 @@ class JaxV2FrontGraspCloseEnv(JaxV2FrontPregraspEnv):
                 # v48f probe: fingers 1 and 2 distal curl fixed (the trained policies kept it at 0 deg; does curling them
                 # bring the first joints onto the cube?)
                 curl[:, :2] = math.radians(fix_f)
+            if pre_wait is not None:
+                curl = torch.where(pre_wait, torch.zeros_like(curl), curl)
             q2 = q2 + curl
         self._bal_q = torch.cat((q1, q2), dim=1)
         self._bal_f = f

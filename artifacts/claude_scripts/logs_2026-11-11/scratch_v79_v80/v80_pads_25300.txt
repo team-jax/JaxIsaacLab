@@ -1,0 +1,19 @@
+ROT cube_world_max_during_lift_deg 4.4 hand_max_during_lift_deg 0.5 cube_world_max_during_return_deg 39.0 cube_in_hand_max_deg 5.1 (lifted envs, mean)
+SPLIT on_table(before 1cm): tilt 2.4 yaw 1.2 | lifting: tilt 2.8 yaw 1.8 (deg, max, lifted envs mean)
+SQUARE start |psi0| mean 22.7 | at lift-off: n 576 mean|.| 21.9 p90 40.3  <=5deg 0.14 <=10deg 0.26 | at lift_done: n 524 mean|.| 20.8 p90 41.1  <=5deg 0.19 <=10deg 0.32
+FRONT cube turn against the robot base axes at lift_done (folded +/-45): n 524 mean|.| 3.4 p90 7.2  <=5deg 0.78 <=10deg 0.97 | mean signed -0.3 | front - in-hand: mean 0.2 sd 26.3
+FRONT_BIN |psi0|  0-15: n 179 mean|.| 3.6 p90 7.7  <=5deg 0.75 <=10deg 0.98
+FRONT_BIN |psi0| 15-30: n 162 mean|.| 4.1 p90 8.0  <=5deg 0.70 <=10deg 0.92
+FRONT_BIN |psi0| 30-45: n 183 mean|.| 2.6 p90 5.5  <=5deg 0.88 <=10deg 0.99
+SQUARE_BIN |psi0|  0-15 deg: start mean 7.3 | lift-off n 191 mean|.| 6.4 p90 12.2  <=5deg 0.41 <=10deg 0.77 | lift_done n 179 mean|.| 5.5 p90 11.3  <=5deg 0.53 <=10deg 0.84
+SQUARE_BIN |psi0| 15-30 deg: start mean 22.9 | lift-off n 190 mean|.| 21.6 p90 27.9  <=5deg 0.00 <=10deg 0.02 | lift_done n 162 mean|.| 19.4 p90 27.5  <=5deg 0.03 <=10deg 0.10
+SQUARE_BIN |psi0| 30-45 deg: start mean 37.5 | lift-off n 195 mean|.| 37.3 p90 43.5  <=5deg 0.00 <=10deg 0.00 | lift_done n 183 mean|.| 37.1 p90 43.7  <=5deg 0.00 <=10deg 0.00
+DONE lift_done_frac 0.910
+HELD done_and_still_lifted_at_end 0.908
+PROX held_end_first_joint_N [0.0, 0.025, 0.139] sum 0.165
+PROX_LIFT mean_first_joint_N_while_lifting [0.001, 0.018, 0.001] sum 0.020
+PROX_DONE first_joint_N_at_lift_done [0.0, 0.025, 0.141] sum 0.166
+PADS_DONE n 524 | mean N [0.0, 0.03, 0.14, 0.65, 0.92, 1.37] | share > 0.1 N [0.0, 0.06, 0.09, 0.69, 0.97, 1.0] | share > 0.3 N [0.0, 0.04, 0.09, 0.69, 0.95, 0.98]
+DIGITS_DONE (f1, f2, thumb) first+distal: mean N [0.65, 0.94, 1.51] | share < 0.1 N (not touching) [0.31, 0.01, 0.0] | all three >= 0.3 N 0.68 | links touching (>0.1 N) mean 2.81 of 6
+ALL lifted 0.915
+DROP n 1 of done 524 | drop_t after done s [1.47] | cells [(-14, 6)]

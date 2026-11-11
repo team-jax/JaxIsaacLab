@@ -307,6 +307,19 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     # v72 probe: GL_PRE_DZ (m) - pre-grasp hand height offset through the table-height blend of the lookup, table unmoved
     # (V3 fingertips sit 1-2.6 mm higher than V2's at the same joint angles: hand 3.5 mm nearer the wrist)
     gl_pre_dz = float(os.environ.get("GL_PRE_DZ", "0"))
+    # v80 (user 2026-11-11: "train so the finger that does not touch touches the cube as much as possible"): finger 1 (the top
+    # finger at the pre-grasp, hand y axis pointing down) missed the cube in 26-28 % of the held envs (its first joint at the
+    # 30 deg close cap, its link origins 3-4 cm above the cube top); a pre-grasp 1 cm lower (GL_PRE_DZ=-0.01) took that to 5 %
+    # with 25550 as it is. GL_PRE_DZ_RAND="lo,hi" (m) draws the offset per episode instead (training: robust to a hand-height
+    # error); GL_DIGIT_MIN=k pays k x hold x 3 x min over the three digits of (first + distal pad force) / GL_DISTAL_SAT (0-1),
+    # i.e. for the weakest digit's contact (the distal-grip term took min(thumb, max(finger 1, finger 2)))
+    gl_pre_dz_rand = tuple(float(v) for v in os.environ["GL_PRE_DZ_RAND"].split(",")) if os.environ.get("GL_PRE_DZ_RAND") else None
+    gl_digit_min_scale = float(os.environ.get("GL_DIGIT_MIN", "0"))
+    # v80b: GL_PRE_DZ_MIN=m (m) - the pre-grasp's absolute height offset (table offset + GL_PRE_DZ) is kept >= m: 25550 lifted 39 /
+    # 20 % with the table 2 / 3 cm low (near spots x -12 / -14 cm: shoulder pitch, shoulder yaw and wrist pitch at their limits,
+    # the lift stalled 13 cm short), so with the table 1 cm low the 1 cm lower pre-grasp (absolute -2 cm) held 43 %. With m =
+    # -0.01 the hand goes 1 cm lower at the nominal table and stays as before at the 1 cm lower table
+    gl_pre_dz_min = float(os.environ["GL_PRE_DZ_MIN"]) if os.environ.get("GL_PRE_DZ_MIN") else None
     gl_shift_grid_dzm3_path = "data/v34c_shift_grid_dzm3.pt"  # as v2_arm_raise.JaxV2RaiseCubeWideEnvCfg
     gl_shift_grid_dzp3_path = "data/v34c_shift_grid_dzp3.pt"
     # v35 (user 2026-11-04: grasp unstable as y changes): the fingers only reached the robot-side ~2 cm of
@@ -397,6 +410,14 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
             gl_shift_grid_path = f"data/{_gs}_basec.pt"
             gl_shift_grid_dzm3_path = f"data/{_gs}_m3c.pt"
             gl_shift_grid_dzp3_path = f"data/{_gs}_p3c.pt"
+    # v81 (user 2026-11-11: "the table goes where MuJoCo has it, no matter what"): GL_TABLE_TEAM=1 - the team-jax/IK (JAX_SETUP=real)
+    # layout: table in front of the robot along base -x (world +y here), profile centre line (world y 0.01) -> near edge 0.16 m, far
+    # edge 0.65 m, left-right +/-0.355 m, same height. The cube stays at its reference spot + the offset box (the team's cube band
+    # is offsets dx +0.01..+0.26, dy +0.22..+0.30 m); pre-grasp grids / turn table / mask for it: GL_GRID_SET=teamf,
+    # GL_OBS_YAW_THETA=data/team_valid.pt, GL_CUBE_MASK=data/team_mask.pt
+    if os.environ.get("GL_TABLE_TEAM"):
+        table_center = (0.0, 0.415, table_center[2] if "table_center" in dir() else 0.72)
+        table_cfg = (table_cfg if "table_cfg" in dir() else JaxV2FrontLiftRLEnvCfg().table_cfg).replace(size=(0.71, 0.49, 0.04))
     # v41b (user: "the cube angle changing while lifting is annoying"): GL_ROT sets the cube-rotation cost (per rad)
     if os.environ.get("GL_ROT"):
         gl_rot_cost = float(os.environ["GL_ROT"])
@@ -428,7 +449,26 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     # v70: GL_OBS_YAW=2 - the same input followed live: + the cube's turn since the start - the hand's heading change since the
     # start (fingertip direction), both about world z, + a per-step error U(+/- GL_OBS_YAW_STEP_NOISE_DEG) (default 2 deg), so the
     # policy sees whether the cube squared up during the close and whether it turns in the hand while lifted
-    gl_obs_yaw_live = os.environ.get("GL_OBS_YAW", "") == "2"
+    gl_obs_yaw_live = os.environ.get("GL_OBS_YAW", "") in ("2", "3")
+    # v79: GL_OBS_YAW=3 - live like 2, but the turns are twist angles about world z of the cube's and the hand's orientation
+    # change since the start (2 used the fingertip direction for the hand, which the hand's own turn about the vertical moves
+    # only through its horizontal part)
+    gl_obs_yaw_twist = os.environ.get("GL_OBS_YAW", "") == "3"
+    # v79 (user 2026-11-11: "for MuJoCo, when the cube is turned, guide it to the front in Isaac"; 25550 kept the turn: in-hand
+    # 22.9 deg at the start -> 20.6 deg at lift_done): GL_PRE_YAW="s,max_deg" - before the fingers close, the lift IK turns the
+    # hand about the world vertical around the grasp point by the measured cube turn relative to the hand (the yaw input's psi,
+    # folded to +/-45 deg, capped at max_deg), the fingers held open and the lift commands off for s seconds; then the usual
+    # grasp, so the cube sits square in the hand and comes to the L hand-over front-facing. GL_SQUARE=k costs k per rad of the
+    # cube's in-hand turn from square (folded to +/-45 deg) while it is held off the table, until the L return (needs GL_OBS_YAW=3)
+    pre_yaw = tuple(float(v) for v in os.environ["GL_PRE_YAW"].split(",")) if os.environ.get("GL_PRE_YAW") else None
+    gl_square_cost = float(os.environ.get("GL_SQUARE", "0"))
+    # v79: GL_RET_YAW="c_deg[,max_deg]" - the L return turns the arm about the vertical (shoulder yaw, Isaac 2: the upper arm hangs
+    # straight down at the L) by the cube's estimated in-hand turn + c_deg (the L hand heading against the robot's front), folded to
+    # +/-45 deg and capped, so the cube reaches the hand-over front-facing (square to the robot); the estimate is the yaw input's
+    # value at the return start (camera turn at the pre-grasp + tracked turn since, GL_OBS_YAW=3)
+    # v80: a third value 1 ("0,45,1") re-measures the turn at the return start (camera on the lifted cube): + the cube's turn in the
+    # hand since the pre-grasp, which the first reading misses (x -14, y +6 cm: 12-19 deg left at the hand-over)
+    ret_yaw = tuple(float(v) for v in os.environ["GL_RET_YAW"].split(",")) if os.environ.get("GL_RET_YAW") else None
     gl_obs_yaw_step_noise_deg = float(os.environ.get("GL_OBS_YAW_STEP_NOISE_DEG", "2"))
     if gl_obs_yaw:
         observation_space = 45
@@ -623,7 +663,11 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             obs["policy"][:, 34:37] += e
         if self.cfg.gl_obs_yaw:
             yr = self._gl_yaw_rel if hasattr(self, "_gl_yaw_rel") else torch.zeros(self.num_envs, device=self.device)
-            if self.cfg.gl_obs_yaw_live and hasattr(self, "_gl_yaw_cnt"):
+            if self.cfg.gl_obs_yaw_twist and hasattr(self, "_gl_yaw_cnt"):
+                nz = math.radians(self.cfg.gl_obs_yaw_step_noise_deg) * (2.0 * torch.rand(self.num_envs, device=self.device) - 1.0)
+                yr = yr + self._gl_twist_delta(capture=True) + nz
+                self._gl_yaw_cnt += 1
+            elif self.cfg.gl_obs_yaw_live and hasattr(self, "_gl_yaw_cnt"):
                 from isaaclab.utils.math import quat_apply as _qa
                 _ex = torch.zeros((self.num_envs, 3), device=self.device); _ex[:, 0] = 1.0
                 _xc = _qa(self.object.data.root_quat_w, _ex); yc = torch.atan2(_xc[:, 1], _xc[:, 0])
@@ -641,6 +685,21 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
                 if obs[k].shape[-1] == 43:
                     obs[k] = torch.cat((obs[k], extra), dim=1)
         return obs
+
+    def _gl_twist_delta(self, capture: bool) -> torch.Tensor:
+        """v79: the cube's turn minus the hand's turn about world z since the references (taken by the observation one physics
+        step after the reset, when _gl_yaw_cnt is 1), as twist angles of the orientation changes."""
+        from isaaclab.utils.math import quat_mul, quat_conjugate
+        cq = self.object.data.root_quat_w; hq = self.robot.data.body_quat_w[:, self._hand_id]
+        if not hasattr(self, "_gl_tw_c0"):
+            self._gl_tw_c0 = cq.clone(); self._gl_tw_h0 = hq.clone()
+        if capture:
+            cap = (self._gl_yaw_cnt == 1)[:, None]
+            self._gl_tw_c0 = torch.where(cap, cq, self._gl_tw_c0); self._gl_tw_h0 = torch.where(cap, hq, self._gl_tw_h0)
+        w = lambda a: torch.remainder(a + math.pi, 2.0 * math.pi) - math.pi
+        tw = lambda q: w(2.0 * torch.atan2(q[:, 3], q[:, 0]))
+        d = w(tw(quat_mul(cq, quat_conjugate(self._gl_tw_c0))) - tw(quat_mul(hq, quat_conjugate(self._gl_tw_h0))))
+        return torch.where(self._gl_yaw_cnt >= (1 if capture else 2), d, torch.zeros_like(d))
 
     def _pre_physics_step(self, actions):
         if self.cfg.gl_obs_q_target:
@@ -857,6 +916,9 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             cy = self._gl_cube_yaw[ids] if hasattr(self, "_gl_cube_yaw") else torch.zeros(n, device=self.device)
             err = torch.deg2rad(c.gl_obs_yaw_noise_deg * (2.0 * torch.rand(n, device=self.device) - 1.0))
             self._gl_yaw_rel[ids] = cy - th + err
+            if not hasattr(self, "_gl_psi0"):
+                self._gl_psi0 = torch.zeros(self.num_envs, device=self.device)
+            self._gl_psi0[ids] = cy - th  # v79: the true turn (no camera error), for the GL_SQUARE cost
             if c.gl_obs_yaw_live:
                 if not hasattr(self, "_gl_yaw_cnt"):
                     self._gl_yaw_cnt = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -882,6 +944,11 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             gx, gy, G = self._gl_grid
             Wg = grid_weights(gx, gy, off + off.new_tensor([c.gl_reach_dx_m, c.gl_reach_dy_m]) + (self._obs_cube_bias[ids][:, :2] if (c.gl_obs_cube_noise and hasattr(self, "_obs_cube_bias")) else 0.0))
             dzg = dz - c.gl_table_z0 + c.gl_pre_dz  # v53: the grid set is built at gl_table_z0; v72: + GL_PRE_DZ
+            if c.gl_pre_dz_rand:
+                lo_, hi_ = c.gl_pre_dz_rand
+                dzg = dz - c.gl_table_z0 + lo_ + (hi_ - lo_) * torch.rand(n, device=self.device)  # v80: per episode
+            if c.gl_pre_dz_min is not None:
+                dzg = torch.clamp(dzg, min=c.gl_pre_dz_min)  # v80b: absolute floor
             q8 = q8 + (dzg / -0.03).clamp_min(0.0)[:, None] * (Wg @ self._gl_grid_m - Wg @ G)
             q8 = q8 + (dzg / 0.03).clamp_min(0.0)[:, None] * (Wg @ self._gl_grid_p - Wg @ G)
         if c.gl_roll_deg:
@@ -1021,6 +1088,10 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
                 terms["distal"] = c.gl_distal_scale * hold * 3.0 * dgrip
             if c.gl_prox_need_distal:
                 terms["prox"] = terms["prox"] * dgrip
+        if c.gl_digit_min_scale:
+            dsat = ((pf_all[:, :3] + pf_all[:, 3:]) / c.gl_distal_sat_n).clamp(0.0, 1.0)
+            terms["digit_min"] = c.gl_digit_min_scale * hold * 3.0 * dsat.amin(dim=1)
+            log["gl_f1_touch"] = (((pf_all[:, 0] + pf_all[:, 3]) >= c.close_touch_n).float() * hold * closing).sum() / (hold * closing).sum().clamp_min(1.0)
         if c.gl_slip_cost:
             tips_z = self.robot.data.body_pos_w[:, self.fingertip_ids, 2].mean(dim=1)
             if not hasattr(self, "_gl_tips_z0"):
@@ -1036,8 +1107,14 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             tilt_abs = torch.acos(quat_apply(self.object.data.root_quat_w, ez)[:, 2].clamp(-1.0, 1.0))
             terms["tilt"] = -c.gl_tilt_cost * tilt_abs * (rise > c.gl_liftoff_m).float()
             log["gl_tilt_deg"] = torch.rad2deg((tilt_abs * (rise > c.gl_liftoff_m).float() * closing).sum() / closing.float().sum().clamp_min(1.0))
+        if c.gl_square_cost:
+            assert c.gl_obs_yaw_twist, "GL_SQUARE needs GL_OBS_YAW=3"
+            sq = torch.remainder(self._gl_psi0 + self._gl_twist_delta(capture=False) + math.pi / 4, math.pi / 2) - math.pi / 4
+            upf = (rise > c.gl_liftoff_m).float()
+            terms["square"] = -c.gl_square_cost * sq.abs() * hold * upf
+            log["gl_square_deg"] = torch.rad2deg((sq.abs() * hold * upf * closing).sum() / (hold * upf * closing).sum().clamp_min(1.0))
         if ret is not None:
-            for k in ("xy", "xy_vel", "rot", "angvel", "hand_rot", "over", "late", "drag", "tilt"):
+            for k in ("xy", "xy_vel", "rot", "angvel", "hand_rot", "over", "late", "drag", "tilt", "square"):
                 if k in terms:
                     terms[k] = terms[k] * (1.0 - ret)
         reward = closing.float() * sum(terms.values()) * c.gl_reward_scale

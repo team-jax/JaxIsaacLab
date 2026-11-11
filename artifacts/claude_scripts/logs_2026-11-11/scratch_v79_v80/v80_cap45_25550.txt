@@ -1,0 +1,24 @@
+ROT cube_world_max_during_lift_deg 4.1 hand_max_during_lift_deg 0.5 cube_world_max_during_return_deg 38.7 cube_in_hand_max_deg 4.8 (lifted envs, mean)
+SPLIT on_table(before 1cm): tilt 2.4 yaw 1.0 | lifting: tilt 2.8 yaw 1.6 (deg, max, lifted envs mean)
+SQUARE start |psi0| mean 23.1 | at lift-off: n 575 mean|.| 22.3 p90 39.7  <=5deg 0.09 <=10deg 0.21 | at lift_done: n 510 mean|.| 20.9 p90 39.8  <=5deg 0.15 <=10deg 0.27
+FRONT cube turn against the robot base axes at lift_done (folded +/-45): n 510 mean|.| 3.2 p90 6.9  <=5deg 0.79 <=10deg 0.98 | mean signed -0.2 | front - in-hand: mean 3.5 sd 25.8
+FRONT_BIN |psi0|  0-15: n 158 mean|.| 3.4 p90 7.5  <=5deg 0.75 <=10deg 0.99
+FRONT_BIN |psi0| 15-30: n 187 mean|.| 3.6 p90 7.7  <=5deg 0.73 <=10deg 0.96
+FRONT_BIN |psi0| 30-45: n 165 mean|.| 2.7 p90 5.2  <=5deg 0.88 <=10deg 0.99
+SQUARE_BIN |psi0|  0-15 deg: start mean 8.2 | lift-off n 168 mean|.| 7.5 p90 12.7  <=5deg 0.31 <=10deg 0.73 | lift_done n 158 mean|.| 6.2 p90 12.1  <=5deg 0.44 <=10deg 0.80
+SQUARE_BIN |psi0| 15-30 deg: start mean 22.7 | lift-off n 229 mean|.| 21.8 p90 27.7  <=5deg 0.00 <=10deg 0.00 | lift_done n 187 mean|.| 19.6 p90 27.0  <=5deg 0.03 <=10deg 0.06
+SQUARE_BIN |psi0| 30-45 deg: start mean 37.5 | lift-off n 178 mean|.| 37.1 p90 43.7  <=5deg 0.00 <=10deg 0.00 | lift_done n 165 mean|.| 36.4 p90 43.6  <=5deg 0.00 <=10deg 0.00
+DONE lift_done_frac 0.885
+FINGERQ held_end deg (f1_1, f2_1, th_1, f1_2, f2_2, th_2) q [20.7, 8.1, -32.9, 0.0, 0.0, 25.4] | target [21.0, 8.4, -28.8, 0.0, 0.0, 53.0] | first-joint caps [45.0, 45.0, 0.0] | at cap (target within 0.5 deg) [0.28, 0.0, 0.0] | rotation_base -169.6 shoulder_roll 0.0
+HELD done_and_still_lifted_at_end 0.884
+PROX held_end_first_joint_N [0.002, 0.018, 0.18] sum 0.200
+PROX_LIFT mean_first_joint_N_while_lifting [0.002, 0.009, 0.004] sum 0.015
+PROX_DONE first_joint_N_at_lift_done [0.004, 0.02, 0.193] sum 0.218
+PADS_DONE n 510 | mean N [0.0, 0.02, 0.19, 0.68, 0.95, 1.37] | share > 0.1 N [0.01, 0.06, 0.11, 0.71, 0.98, 0.99] | share > 0.3 N [0.0, 0.02, 0.11, 0.71, 0.97, 0.95]
+DIGITS_DONE (f1, f2, thumb) first+distal: mean N [0.69, 0.97, 1.56] | share < 0.1 N (not touching) [0.28, 0.0, 0.0] | all three >= 0.3 N 0.71 | links touching (>0.1 N) mean 2.87 of 6
+F1SPLIT f1_not_touching n 144 | finger q deg (f1_1, f2_1, th_1, f1_2, f2_2, th_2) [43.0, 0.7, -29.8, 0.0, 0.0, 40.3] | targets [43.6, 1.1, -29.5, 0.0, 0.0, 59.7] | f1 first at cap 30 0.98 | |psi0| mean 22.3
+F1SPLIT f1_touching n 366 | finger q deg (f1_1, f2_1, th_1, f1_2, f2_2, th_2) [8.7, 8.8, -29.6, 0.0, 0.0, 15.7] | targets [8.9, 9.0, -28.6, 0.0, 0.0, 50.4] | f1 first at cap 30 0.00 | |psi0| mean 23.4
+F1OFF_BY_CELL share of held envs with finger 1 not touching: (2,-28) 0.11 (2,0) 0.23 (2,28) 0.28 (-4,-24) 0.32 (-4,24) 0.31 (-8,-18) 0.40 (-8,0) 0.21 (-8,18) 0.25 (-12,-14) 0.33 (-12,12) 0.28 (-14,-8) 0.42 (-14,6) 0.25
+F1OFF_BY_PSI0 (signed, deg): [-45,-30) 0.32 [-30,-15) 0.35 [-15,0) 0.40 [0,15) 0.24 [15,30) 0.15 [30,45) 0.20
+ALL lifted 0.891
+DROP n 1 of done 510 | drop_t after done s [4.6] | cells [(-12, -14)]

@@ -1,0 +1,14 @@
+ROT cube_world_max_during_lift_deg 4.1 hand_max_during_lift_deg 0.5 cube_world_max_during_return_deg 35.3 cube_in_hand_max_deg 4.5 (lifted envs, mean)
+SPLIT on_table(before 1cm): tilt 2.4 yaw 1.0 | lifting: tilt 3.0 yaw 1.6 (deg, max, lifted envs mean)
+SQUARE start |psi0| mean 22.7 | at lift-off: n 287 mean|.| 22.0 p90 39.5  <=5deg 0.13 <=10deg 0.24 | at lift_done: n 256 mean|.| 20.4 p90 39.8  <=5deg 0.20 <=10deg 0.32
+FRONT cube turn against the robot base axes at lift_done (folded +/-45): n 256 mean|.| 1.8 p90 3.3  <=5deg 0.98 <=10deg 1.00 | mean signed 0.7 | front - in-hand: mean -0.9 sd 25.0
+FRONT_BIN |psi0|  0-15: n 89 mean|.| 1.8 p90 3.7  <=5deg 0.97 <=10deg 1.00
+FRONT_BIN |psi0| 15-30: n 74 mean|.| 1.8 p90 3.0  <=5deg 0.97 <=10deg 1.00
+FRONT_BIN |psi0| 30-45: n 93 mean|.| 1.8 p90 3.2  <=5deg 0.99 <=10deg 0.99
+SQUARE_BIN |psi0|  0-15 deg: start mean 7.2 | lift-off n 94 mean|.| 6.4 p90 11.8  <=5deg 0.39 <=10deg 0.73 | lift_done n 89 mean|.| 5.3 p90 11.7  <=5deg 0.55 <=10deg 0.83
+SQUARE_BIN |psi0| 15-30 deg: start mean 22.5 | lift-off n 91 mean|.| 21.4 p90 27.7  <=5deg 0.00 <=10deg 0.00 | lift_done n 74 mean|.| 18.9 p90 25.9  <=5deg 0.04 <=10deg 0.11
+SQUARE_BIN |psi0| 30-45 deg: start mean 37.2 | lift-off n 102 mean|.| 36.8 p90 43.6  <=5deg 0.00 <=10deg 0.00 | lift_done n 93 mean|.| 36.2 p90 43.6  <=5deg 0.00 <=10deg 0.00
+DONE lift_done_frac 0.889
+HELD done_and_still_lifted_at_end 0.882
+ALL lifted 0.889
+DROP n 2 of done 256 | drop_t after done s [0.88, 6.1] | cells [(-4, 24), (2, 0)]

@@ -1,0 +1,295 @@
+{
+ "note": "state at lift_done (arm at the L, still, gripping, cube >= 4 cm up for 0.5 s); env-origin frame, m / deg; arm_q_deg = 7 arm joints + RotationBody, finger_q_deg = fingers 1,2,thumb first joints then second joints, pad_N = [finger1,finger2,thumb first links, finger1,finger2,thumb distal]",
+ "joint_names_arm": [
+  "shoulder_pitch_to_shoulder_roll",
+  "shoulder_roll_to_shoulder_yaw",
+  "shoulder_yaw_to_upper_arm",
+  "upper_arm_to_under_arm",
+  "under_arm_to_wrist_pitch",
+  "wrist_pitch_to_wrist_yaw",
+  "wrist_yaw_to_hand_base",
+  "hand_base_to_rotation_base"
+ ],
+ "joint_names_fingers": [
+  "hand_base_to_finger_1_1",
+  "hand_base_to_finger_2_1",
+  "rotation_base_to_finger_3_1",
+  "finger_1_1_to_finger_1_2",
+  "finger_1_2_to_finger_2_2",
+  "finger_3_1_to_finger_3_2"
+ ],
+ "envs": [
+  {
+   "t_after_handover_s": 5.15,
+   "episode_t_s": 10.13,
+   "arm_q_deg": [
+    -0.22,
+    -0.0,
+    7.2,
+    89.71,
+    0.11,
+    -2.65,
+    0.14,
+    -169.41
+   ],
+   "finger_q_deg": [
+    10.47,
+    11.09,
+    -30.27,
+    0.0,
+    0.0,
+    25.51
+   ],
+   "hand_pos_m": [
+    -0.2636,
+    0.2956,
+    0.8923
+   ],
+   "hand_quat_wxyz": [
+    -0.4816,
+    0.4533,
+    -0.5167,
+    0.5437
+   ],
+   "fingertip_mid_pos_m": [
+    -0.3946,
+    0.2962,
+    0.8909
+   ],
+   "cube_pos_m": [
+    -0.4284,
+    0.2826,
+    0.8656
+   ],
+   "cube_quat_wxyz": [
+    0.9964,
+    -0.0424,
+    0.0648,
+    -0.035
+   ],
+   "cube_minus_fingertip_mid_m": [
+    -0.0338,
+    -0.0136,
+    -0.0253
+   ],
+   "cube_rise_m": 0.1581,
+   "pad_N": [
+    0.0,
+    0.0,
+    0.0,
+    1.001,
+    0.999,
+    1.985
+   ],
+   "robot_base_pos_m": [
+    0.0,
+    0.01,
+    -0.0575
+   ]
+  },
+  {
+   "t_after_handover_s": 5.13,
+   "episode_t_s": 10.12,
+   "arm_q_deg": [
+    -0.22,
+    0.0,
+    7.21,
+    89.71,
+    0.1,
+    -2.65,
+    0.12,
+    -169.38
+   ],
+   "finger_q_deg": [
+    7.87,
+    8.44,
+    -30.54,
+    0.0,
+    0.0,
+    31.45
+   ],
+   "hand_pos_m": [
+    -0.2636,
+    0.2956,
+    0.8923
+   ],
+   "hand_quat_wxyz": [
+    -0.4814,
+    0.4534,
+    -0.5166,
+    0.5438
+   ],
+   "fingertip_mid_pos_m": [
+    -0.3946,
+    0.2981,
+    0.891
+   ],
+   "cube_pos_m": [
+    -0.4282,
+    0.2861,
+    0.8647
+   ],
+   "cube_quat_wxyz": [
+    0.9942,
+    -0.0347,
+    0.0571,
+    -0.0841
+   ],
+   "cube_minus_fingertip_mid_m": [
+    -0.0336,
+    -0.012,
+    -0.0263
+   ],
+   "cube_rise_m": 0.1572,
+   "pad_N": [
+    0.0,
+    0.0,
+    0.0,
+    0.971,
+    0.958,
+    1.93
+   ],
+   "robot_base_pos_m": [
+    0.0,
+    0.01,
+    -0.0575
+   ]
+  },
+  {
+   "t_after_handover_s": 5.08,
+   "episode_t_s": 10.07,
+   "arm_q_deg": [
+    -0.22,
+    -0.0,
+    7.21,
+    89.71,
+    0.12,
+    -2.66,
+    0.21,
+    -169.5
+   ],
+   "finger_q_deg": [
+    12.87,
+    13.3,
+    -30.25,
+    0.0,
+    0.0,
+    20.14
+   ],
+   "hand_pos_m": [
+    -0.2636,
+    0.2956,
+    0.8923
+   ],
+   "hand_quat_wxyz": [
+    -0.482,
+    0.4528,
+    -0.517,
+    0.5434
+   ],
+   "fingertip_mid_pos_m": [
+    -0.3945,
+    0.2945,
+    0.8909
+   ],
+   "cube_pos_m": [
+    -0.4281,
+    0.2798,
+    0.8645
+   ],
+   "cube_quat_wxyz": [
+    0.9965,
+    -0.0339,
+    0.076,
+    0.0096
+   ],
+   "cube_minus_fingertip_mid_m": [
+    -0.0336,
+    -0.0147,
+    -0.0264
+   ],
+   "cube_rise_m": 0.157,
+   "pad_N": [
+    0.0,
+    0.0,
+    0.0,
+    0.999,
+    0.999,
+    1.913
+   ],
+   "robot_base_pos_m": [
+    0.0,
+    0.01,
+    -0.0575
+   ]
+  },
+  {
+   "t_after_handover_s": 4.98,
+   "episode_t_s": 9.97,
+   "arm_q_deg": [
+    -0.22,
+    0.0,
+    7.2,
+    89.71,
+    0.1,
+    -2.65,
+    0.11,
+    -169.51
+   ],
+   "finger_q_deg": [
+    8.3,
+    8.53,
+    -30.28,
+    0.0,
+    0.0,
+    -0.0
+   ],
+   "hand_pos_m": [
+    -0.2636,
+    0.2955,
+    0.8923
+   ],
+   "hand_quat_wxyz": [
+    -0.4814,
+    0.4535,
+    -0.5166,
+    0.5438
+   ],
+   "fingertip_mid_pos_m": [
+    -0.3947,
+    0.2979,
+    0.8909
+   ],
+   "cube_pos_m": [
+    -0.4258,
+    0.2797,
+    0.8676
+   ],
+   "cube_quat_wxyz": [
+    0.9399,
+    0.0006,
+    0.0533,
+    0.3372
+   ],
+   "cube_minus_fingertip_mid_m": [
+    -0.0312,
+    -0.0182,
+    -0.0233
+   ],
+   "cube_rise_m": 0.1601,
+   "pad_N": [
+    0.0,
+    0.0,
+    0.0,
+    0.998,
+    1.002,
+    1.757
+   ],
+   "robot_base_pos_m": [
+    0.0,
+    0.01,
+    -0.0575
+   ]
+  }
+ ]
+}

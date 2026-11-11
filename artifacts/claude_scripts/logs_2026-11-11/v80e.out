@@ -1,0 +1,13 @@
+== ROUND 1 from 2026-11-11_12-36-09_v80c_r1/model_25625.pt
+EVAL_START1 2026-11-11_12-36-09_v80c_r1/model_25625.pt 0.880 5.4 2.1 0.837 4.6 1.9 0.198 0.011 0.896 0.875 0.868 0.82 -> 0.8859
+EVAL_START2 2026-11-11_12-36-09_v80c_r1/model_25625.pt 0.849 5.1 2.0 0.806 5.1 2.4 0.190 0.007 0.892 0.877 0.859 0.80 -> 0.8659
+BASE_MEAN 0.8759 2026-11-11_12-36-09_v80c_r1/model_25625.pt
+BASE 0.8866 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+TRAIN gl_lifted 0.6819 rot 17.3678 @25675
+TRAIN gl_lifted 0.6219 rot 18.8000 @25750
+TRAIN gl_lifted 0.6071 rot 15.9249 @25824
+EVAL 2026-11-11_15-00-37_v80e_r1/model_25700.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.851 5.4 2.1 0.800 4.8 1.8 0.154 0.005 0.898 0.851 0.863 0.80
+EVAL 2026-11-11_15-00-37_v80e_r1/model_25800.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.842 5.2 2.0 0.816 5.1 1.9 0.161 0.009 0.851 0.830 0.847 0.79
+BEST_OF v80e_r1 2026-11-11_15-00-37_v80e_r1/model_25700.pt 0.8639
+== ROUND 2 from 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+bash terminated by signal TERM.

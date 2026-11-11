@@ -1,0 +1,14 @@
+LOOP_PAUSED 23888
+SPOT (0.04, 0.22) done 0.875 lifted 0.875 approach_contact_N 22.8 cube_moved_mm 0.0 table_N_max 16.0
+SPOT (0.10, 0.22) done 1.000 lifted 1.000 approach_contact_N 21.6 cube_moved_mm 0.1 table_N_max 16.5
+SPOT (0.24, 0.22) done 0.625 lifted 0.625 approach_contact_N 17.0 cube_moved_mm 1.6 table_N_max 15.8
+SPOT (0.06, 0.25) done 1.000 lifted 1.000 approach_contact_N 21.1 cube_moved_mm 0.5 table_N_max 15.3
+SPOT (0.16, 0.25) done 0.875 lifted 0.875 approach_contact_N 20.3 cube_moved_mm 1.4 table_N_max 16.4
+SPOT (0.25, 0.25) done 1.000 lifted 1.000 approach_contact_N 18.6 cube_moved_mm 1.4 table_N_max 16.6
+SPOT (0.10, 0.28) done 1.000 lifted 1.000 approach_contact_N 20.1 cube_moved_mm 1.0 table_N_max 15.2
+SPOT (0.18, 0.295) done 0.875 lifted 0.875 approach_contact_N 19.2 cube_moved_mm 1.2 table_N_max 15.1
+SPOT (0.25, 0.295) done 0.625 lifted 0.625 approach_contact_N 18.4 cube_moved_mm 1.5 table_N_max 14.5
+CHAIN_CHECK_DONE
+MONTAGE logs/rsl_rl/jax_v2_1006_front_grasp_lift_v16/2026-11-11_04-57-42_v78d_r9/videos/montage_team_model_25550.mp4 1005 frames
+LOOP_RESUMED 23888
+V81_MONTAGE_DONE

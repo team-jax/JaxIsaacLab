@@ -1,0 +1,9 @@
+ROT cube_world_max_during_lift_deg 13.9 hand_max_during_lift_deg 9.5 cube_world_max_during_return_deg 49.3 cube_in_hand_max_deg 6.9 (lifted envs, mean)
+SPLIT on_table(before 1cm): tilt 15.5 yaw 14.7 | lifting: tilt 10.4 yaw 3.3 (deg, max, lifted envs mean)
+SQUARE start |psi0| mean 22.5 | at lift-off: n 497 mean|.| 14.2 p90 39.2  <=5deg 0.52 <=10deg 0.60 | at lift_done: n 201 mean|.| 3.2 p90 5.9  <=5deg 0.83 <=10deg 0.97
+SQUARE_BIN |psi0|  0-15 deg: start mean 7.0 | lift-off n 195 mean|.| 2.9 p90 5.5  <=5deg 0.89 <=10deg 0.94 | lift_done n 155 mean|.| 2.7 p90 5.3  <=5deg 0.87 <=10deg 0.99
+SQUARE_BIN |psi0| 15-30 deg: start mean 22.3 | lift-off n 149 mean|.| 17.0 p90 34.9  <=5deg 0.36 <=10deg 0.48 | lift_done n 27 mean|.| 5.1 p90 10.8  <=5deg 0.63 <=10deg 0.85
+SQUARE_BIN |psi0| 30-45 deg: start mean 37.3 | lift-off n 153 mean|.| 25.7 p90 43.2  <=5deg 0.19 <=10deg 0.27 | lift_done n 19 mean|.| 3.9 p90 6.8  <=5deg 0.79 <=10deg 0.89
+DONE lift_done_frac 0.349
+HELD done_and_still_lifted_at_end 0.347
+ALL lifted 0.368

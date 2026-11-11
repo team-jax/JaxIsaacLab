@@ -81,7 +81,7 @@ RUN=2026-11-10_06-22-37_v74b_r8; CK=model_25150.pt
 cp artifacts/claude_scripts/v78_best.txt $B; echo "BASE_MEAN $(cat $B) (from v78, same evals)"; BPID=""
 for r in $(seq 1 40); do
   tag=v78b_r$r
-  if [ $r -gt 1 ]; then BEST=$(cut -d' ' -f2 $B); RUN=$(dirname $BEST); CK=$(basename $BEST); fi
+  BEST=$(cut -d' ' -f2 $B); RUN=$(dirname $BEST); CK=$(basename $BEST)  # every round, round 1 included, from the overall best
   echo "== ROUND $r from $RUN/$CK"
   SEED=$((8400 + r)) env $COMMON $TRAIN GL_CUBE_YAW_DEG=45 GL_MU=0.4,0.35 bash artifacts/claude_scripts/gl_cycle_nr.sh $RUN $CK $tag 400 | grep -E "gl_lifted|HUNG|Traceback" | sed 's/.*gl_lifted:=\([0-9.]*\).*gl_rot_deg:=\([0-9.]*\).*@\([0-9]*\)/TRAIN gl_lifted \1 rot \2 @\3/'
   D=$(ls -d $L/*_$tag | tail -1); rb=-1; rk=""
