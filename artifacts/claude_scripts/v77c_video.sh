@@ -1,0 +1,23 @@
+#!/bin/bash
+# close front video (4 envs, cube at x -6 / y 0 cm, +/-45 deg turns) of a grasp-lift checkpoint under the v77c conditions: motor
+# torque limits (AK45 8, wrist 3.92 / 1.96, hand roll MG996R 0.92, RotationBody + fingers MG90S 0.177 N*m), finger and cube
+# friction 2.0, max grip on the L return, target-angle joint inputs, servo-emulated arm (x5, full chain gravity term), URDF_1109,
+# shoulder -> table 47.25 cm. The training loop ($2 = its bash PID) is paused (SIGSTOP) between rounds so nothing trains while
+# this renders; the render takes the eval lock (flock -o). $1 = checkpoint.
+cd /home/jeongwoo/isaacsim/JaxIsaacLab
+SP=/tmp/claude-1000/-home-jeongwoo-isaacsim-JaxIsaacLab/886e2a88-a982-4003-b7f5-73532822d877/scratchpad
+LOCK=$SP/isaac_eval.lock; C=$1; LOOP=$2
+eval "$(grep -E '^(CLOSE|COMMON)=' artifacts/claude_scripts/v77c_full.sh)"
+while pgrep -f "python3 scripts/reinforcement_learning/rsl_[r]l/train[.]py" > /dev/null; do sleep 15; done
+[ -n "$LOOP" ] && kill -STOP $LOOP && echo "LOOP_PAUSED $LOOP"
+sleep 2; pgrep -f "python3 scripts/reinforcement_learning/rsl_[r]l/train[.]py" > /dev/null && { echo "TRAINING_RUNNING abort"; [ -n "$LOOP" ] && kill -CONT $LOOP; exit 1; }
+F=source/isaaclab_tasks/isaaclab_tasks/direct/one_arm_jax_minimal/render_front_grasp.py
+TAG=v77c_$(basename $C .pt)_close
+flock -o $LOCK env $COMMON GL_SERVO_ARM=5,5 GL_FINGER_EFFORT=0.177,0.177 GL_CUBE_YAW_DEG=45 GL_MU=0.4,0.35 GL_TABLE_DZ_FIXED=0.0 \
+  RAISE_GRID_SET=v65r REACH_FINAL_GRID_SET=v65f CHAIN_GRAV_COMP=1 CHAIN_GRAV_FULL=1 TEST_ARM_GAIN_SCALE=5 RAISE_WIDE=1 \
+  timeout -k 20 900 ./isaaclab.sh -p $F --headless --grasp_lift --num_envs 4 --steps 660 --camera close_front --tag $TAG \
+  --raise_cube=-0.06,0.0 --raise_max_s 11 --raise_sag_comp_deg 0,0,0,0,0,0,0,0 --raise_policy nominal --checkpoint $C > $SP/$TAG.log 2>&1
+[ -n "$LOOP" ] && kill -CONT $LOOP && echo "LOOP_RESUMED $LOOP"
+grep -E "lifted|held|Traceback|Error" $SP/$TAG.log | tail -8
+echo "VIDEO $(ls -d $(dirname $C)/videos/*$TAG* 2>/dev/null | tail -1)"
+echo V77C_VIDEO_DONE

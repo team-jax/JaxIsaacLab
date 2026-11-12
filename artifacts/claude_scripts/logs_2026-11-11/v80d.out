@@ -1,0 +1,19 @@
+== ROUND 1 from 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+EVAL_START1 2026-11-11_04-57-42_v78d_r9/model_25550.pt 0.859 4.9 1.8 0.844 4.8 2.3 0.187 0.009 0.887 0.887 0.887 0.84 -> 0.8903
+EVAL_START2 2026-11-11_04-57-42_v78d_r9/model_25550.pt 0.870 4.3 1.8 0.825 4.8 3.1 0.169 0.01 0.868 0.880 0.905 0.81 -> 0.8830
+BASE_MEAN 0.8866 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+TRAIN gl_lifted 0.6778 rot 17.1880 @25600
+TRAIN gl_lifted 0.6101 rot 17.9241 @25675
+TRAIN gl_lifted 0.5922 rot 15.1817 @25749
+EVAL 2026-11-11_14-22-38_v80d_r1/model_25625.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.863 4.8 2.1 0.809 5.1 2.6 0.162 0.007 0.880 0.844 0.861 0.82
+EVAL 2026-11-11_14-22-38_v80d_r1/model_25725.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.851 4.9 2.2 0.814 4.7 2.3 0.179 0.003 0.847 0.816 0.819 0.76
+BEST_OF v80d_r1 2026-11-11_14-22-38_v80d_r1/model_25625.pt 0.8624
+== ROUND 2 from 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+TRAIN gl_lifted 0.6771 rot 17.0899 @25600
+TRAIN gl_lifted 0.6145 rot 18.2298 @25675
+TRAIN gl_lifted 0.5994 rot 15.8023 @25749
+EVAL 2026-11-11_14-43-54_v80d_r2/model_25625.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.832 5.5 2.6 0.802 5.0 2.3 0.183 0.009 0.861 0.858 0.863 0.80
+EVAL 2026-11-11_14-43-54_v80d_r2/model_25725.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.826 5.2 2.2 0.793 5.0 2.2 0.150 0.005 0.875 0.842 0.821 0.76
+BEST_OF v80d_r2 2026-11-11_14-43-54_v80d_r2/model_25625.pt 0.8486
+== ROUND 3 from 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+bash terminated by signal TERM.

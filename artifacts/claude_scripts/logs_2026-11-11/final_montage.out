@@ -1,0 +1,11 @@
+x+2cm,y-28cm lifted 1.0 done 1.0 handover converged 8.65 raise_contact_N 2.658 cube_moved_mm 10.03 table_N 0.0
+x+2cm,y+0cm lifted 1.0 done 1.0 handover converged 8.65 raise_contact_N 4.946 cube_moved_mm 0.0 table_N 11.37
+x+2cm,y+28cm lifted 0.875 done 0.875 handover converged 8.65 raise_contact_N 3.783 cube_moved_mm 9.22 table_N 2.28
+x-6cm,y-20cm lifted 1.0 done 1.0 handover converged 8.65 raise_contact_N 3.972 cube_moved_mm 0.0 table_N 3.7
+x-6cm,y+0cm lifted 0.875 done 0.875 handover converged 8.65 raise_contact_N 6.531 cube_moved_mm 1.21 table_N 5.82
+x-6cm,y+20cm lifted 1.0 done 1.0 handover converged 8.65 raise_contact_N 2.243 cube_moved_mm 0.07 table_N 2.0
+x-14cm,y-8cm lifted 1.0 done 1.0 handover converged 8.67 raise_contact_N 11.621 cube_moved_mm 20.48 table_N 10.27
+x-14cm,y+0cm lifted 1.0 done 1.0 handover converged 8.67 raise_contact_N 10.649 cube_moved_mm 0.0 table_N 8.75
+x-14cm,y+6cm lifted 1.0 done 1.0 handover converged 8.67 raise_contact_N 6.716 cube_moved_mm 10.54 table_N 3.78
+MONTAGE logs/rsl_rl/jax_v2_1006_front_grasp_lift_v16/2026-11-11_04-57-42_v78d_r9/videos/montage_v27_front_model_25550_final.mp4 1225 frames
+FINAL_MONTAGE_DONE

@@ -1,0 +1,12 @@
+PREYAW |cmd|  0-15: cmd 7.7 | hand turned 2.4 (ratio 0.50) | cube turned -1.5 | cube shift mm 7.1 | pads N 0.39 | sq now 4.1
+PREYAW |cmd| 15-30: cmd 21.7 | hand turned -2.0 (ratio -0.10) | cube turned -2.6 | cube shift mm 34.4 | pads N 0.60 | sq now 17.8
+PREYAW |cmd| 30-45: cmd 36.8 | hand turned -0.5 (ratio -0.01) | cube turned 8.6 | cube shift mm 47.8 | pads N 0.02 | sq now 24.2
+ROT cube_world_max_during_lift_deg 16.9 hand_max_during_lift_deg 10.5 cube_world_max_during_return_deg 51.4 cube_in_hand_max_deg 8.0 (lifted envs, mean)
+SPLIT on_table(before 1cm): tilt 18.6 yaw 18.8 | lifting: tilt 12.1 yaw 4.4 (deg, max, lifted envs mean)
+SQUARE start |psi0| mean 21.8 | at lift-off: n 263 mean|.| 13.3 p90 37.8  <=5deg 0.56 <=10deg 0.61 | at lift_done: n 104 mean|.| 3.5 p90 7.1  <=5deg 0.82 <=10deg 0.94
+SQUARE_BIN |psi0|  0-15 deg: start mean 8.2 | lift-off n 102 mean|.| 4.6 p90 16.2  <=5deg 0.82 <=10deg 0.84 | lift_done n 78 mean|.| 3.2 p90 5.9  <=5deg 0.86 <=10deg 0.96
+SQUARE_BIN |psi0| 15-30 deg: start mean 22.4 | lift-off n 90 mean|.| 14.4 p90 34.7  <=5deg 0.48 <=10deg 0.58 | lift_done n 16 mean|.| 5.8 p90 10.4  <=5deg 0.50 <=10deg 0.81
+SQUARE_BIN |psi0| 30-45 deg: start mean 37.1 | lift-off n 71 mean|.| 24.3 p90 41.9  <=5deg 0.27 <=10deg 0.31 | lift_done n 10 mean|.| 1.7 p90 2.8  <=5deg 1.00 <=10deg 1.00
+DONE lift_done_frac 0.361
+HELD done_and_still_lifted_at_end 0.354
+ALL lifted 0.368

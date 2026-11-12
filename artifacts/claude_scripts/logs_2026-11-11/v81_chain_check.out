@@ -1,0 +1,10 @@
+SPOT (0.04, 0.22) done 1.000 lifted 1.000 approach_contact_N 22.8 cube_moved_mm 0.0 table_N_max 16.0
+SPOT (0.10, 0.22) done 1.000 lifted 1.000 approach_contact_N 21.6 cube_moved_mm 0.5 table_N_max 16.4
+SPOT (0.24, 0.22) done 0.750 lifted 0.750 approach_contact_N 17.0 cube_moved_mm 1.6 table_N_max 15.9
+SPOT (0.06, 0.25) done 1.000 lifted 1.000 approach_contact_N 21.1 cube_moved_mm 0.5 table_N_max 15.2
+SPOT (0.16, 0.25) done 1.000 lifted 1.000 approach_contact_N 20.3 cube_moved_mm 1.3 table_N_max 16.1
+SPOT (0.10, 0.28) done 0.875 lifted 0.875 approach_contact_N 20.1 cube_moved_mm 1.1 table_N_max 15.0
+SPOT (0.22, 0.28) done 0.875 lifted 0.875 approach_contact_N 18.9 cube_moved_mm 1.5 table_N_max 15.1
+SPOT (0.18, 0.295) done 0.875 lifted 0.875 approach_contact_N 19.2 cube_moved_mm 1.1 table_N_max 14.9
+SPOT (0.25, 0.295) done 0.375 lifted 0.375 approach_contact_N 18.4 cube_moved_mm 1.6 table_N_max 14.6
+CHAIN_CHECK_DONE

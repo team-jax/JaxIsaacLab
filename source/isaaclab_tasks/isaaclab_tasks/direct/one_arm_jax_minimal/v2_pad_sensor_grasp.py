@@ -205,12 +205,16 @@ class JaxV2PadSensorGraspEnv(JaxV2SmoothGraspEnv):
         object_b, hand_b, object_vel_b = self._state()
         if hasattr(self, "_obs_base_off"):  # v3: cube position relative to the V2 base origin (object - hand unchanged)
             object_b = object_b - self._obs_base_off; hand_b = hand_b - self._obs_base_off
-        q = self.robot.data.joint_pos
+        q = self.robot.data.joint_pos; qd = self.robot.data.joint_vel
+        if getattr(self.cfg, "gl_obs_q_target", False):
+            # v74: the real robot feeds back the joint targets it sent, not encoder readings
+            q = self.targets
+            qd = (self.targets - self._tg_prev_step) / self.step_dt if hasattr(self, "_tg_prev_step") else torch.zeros_like(q)
         lo, hi = (self._obs_lo, self._obs_hi) if hasattr(self, "_obs_lo") else (self.lower, self.upper)  # v3: V2 limits
         normalized_q = 2.0 * (q - lo) / (hi - lo).clamp_min(1e-5) - 1.0
         pressure = self.sensor_readings(self.pad_forces())
         observation = torch.cat((
-            normalized_q, self.robot.data.joint_vel * 0.2,
+            normalized_q, qd * 0.2,
             object_b, object_vel_b, object_b - hand_b, pressure,
         ), dim=-1)
         return {"policy": observation.clamp(-5.0, 5.0)}

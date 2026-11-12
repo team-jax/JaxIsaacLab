@@ -10,7 +10,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--steps", type=int, default=900)
 parser.add_argument("--num_envs", type=int, default=16)
-parser.add_argument("--camera", choices=("front", "side", "close", "close_front"), default="front")
+parser.add_argument("--camera", choices=("front", "side", "close", "close_front", "top", "team"), default="front")
 parser.add_argument("--tag", default="")
 parser.add_argument("--pregrasp", action="store_true", help="v12 pre-grasp task instead of v11")
 parser.add_argument("--close", action="store_true", help="v13 pre-grasp then close task")
@@ -103,6 +103,14 @@ if args.camera == "close":
 elif args.camera == "close_front":
     cfg.viewer.eye = (-0.72, 0.24, 0.84)
     cfg.viewer.lookat = (-0.40, 0.26, 0.78)
+elif args.camera == "top":
+    # 2026-11-10: straight-ish down over the robot, table and cube (layout comparison picture)
+    cfg.viewer.eye = (-0.30, 0.12, 2.70)
+    cfg.viewer.lookat = (-0.34, 0.12, 0.70)
+elif args.camera == "team":
+    # v81: the team MuJoCo layout (table on world +y): from beyond the table, looking back at the robot's front
+    cfg.viewer.eye = (0.0, 1.45, 1.25)
+    cfg.viewer.lookat = (-0.05, 0.40, 0.80)
 elif args.camera == "front":
     cfg.viewer.eye = (-1.35, 0.10, 1.35)
     cfg.viewer.lookat = (-0.30, 0.12, 0.85)
@@ -138,6 +146,28 @@ rows = []
 chain = {}
 TRACE = []
 TQ = []  # (applied torque, joint velocity) per step
+# 2026-11-10: CHAIN_TRACE_OUT=path.json - env 0's whole chain, every control step: all joint positions (Isaac order),
+# cube pose, phase (raise / reach / policy) and lift_done; for replaying the chain in the team's MuJoCo (ik_merge)
+CHAIN_TRACE = os.environ.get("CHAIN_TRACE_OUT")
+# v81 (user 2026-11-11: the table where the team MuJoCo has it, in front along base -x): CHAIN_TEAM=1 - the hanging arm would pass through
+# that table, so the chain starts at the L (GL_RET_Q_DEG, the hand-over pose), moves in joint space (smoothstep, CHAIN_TEAM_S, default
+# 3.0 s) to the back-off pose (data/teamb_*: the final pre-grasp 4.5 cm back along the approach, 2 cm up), reaches in over 0.75 s to the
+# final pre-grasp (data/teamf_*), holds 0.25 s, then the policy as usual
+CHAIN_TEAM = bool(os.environ.get("CHAIN_TEAM"))
+CHAIN_TEAM_S = float(os.environ.get("CHAIN_TEAM_S", "3.0"))
+CAM_ABOVE_BASE = float(os.environ.get("CAM_ABOVE_BASE_M", "1.22"))  # v80: camera height over the base_link origin (floor + 1.215 m)
+CAM_FWD = float(os.environ.get("CAM_FWD_M", "0.153"))  # v80: camera ahead of the profile centre line (base -x), user 2026-11-11
+CTR = []
+def _ctr(phase):
+    if not CHAIN_TRACE:
+        return
+    o = u.scene.env_origins[0]
+    CTR.append({"phase": phase, "q": [float(v) for v in u.robot.data.joint_pos[0]],
+                "cube_p": [float(v) for v in u.object.data.root_pos_w[0] - o], "cube_q": [float(v) for v in u.object.data.root_quat_w[0]],
+                "done": bool(u.lift_done[0]) if hasattr(u, "lift_done") else False,
+                "tg": [float(v) for v in u.targets[0]],
+                "pad": [float(v) for v in u.pad_forces()[0]] if hasattr(u, "pad_forces") else None,
+                "act": [float(v) for v in u.actions[0]] if hasattr(u, "actions") and phase == "policy" else None})
 TDF = []
 TBL = []
 VZ = []
@@ -228,10 +258,13 @@ if args.raise_policy:
         GRAV = bool(os.environ.get("CHAIN_GRAV_COMP"))
         _sag_fix = torch.tensor([math.radians(v) for v in (1.9, 0.0, 0.0, 2.1, 0.0, 0.7, -0.2, 0.0)], device=u.device)
         _kp_arm = u.robot.data.joint_stiffness[:, arm].clamp_min(1e-3).clone()
+        # v73: CHAIN_GRAV_FULL=1 - the term at full weight from t = 0 (servo-mode emulation: a stiff arm with targets
+        # = geometric pose + tau_g / kp_actual sits exactly on the geometric pose, as a servo commanded the geometric pose)
+        GRAV_FULL = bool(os.environ.get("CHAIN_GRAV_FULL"))
         def _grav_corr(t):
             if not GRAV:
                 return 0.0
-            x = min(max(t - 4.0, 0.0), 1.0); w = x * x * (3.0 - 2.0 * x)
+            x = 1.0 if GRAV_FULL else min(max(t - 4.0, 0.0), 1.0); w = x * x * (3.0 - 2.0 * x)
             g = u.robot.root_physx_view.get_gravity_compensation_forces()[:, arm]
             return w * (g / _kp_arm - _sag_fix)
         rs_raw = {"tg": None}
@@ -256,8 +289,12 @@ if args.raise_policy:
             if _cd["move_t"] is None and mv > 0.002:
                 _cd["move_t"] = round(t, 2)
         q = u.robot.data.joint_pos.clone(); q[:, arm + fids] = 0.0
+        if CHAIN_TEAM:
+            _ql = [float(v) for v in os.environ.get("GL_RET_Q_DEG", "0,0,7.2,90.0,0,-2.6,0").split(",")] + [float(u.cfg.gl_pregrasp_q_deg[7])]
+            q[:, arm] = torch.tensor([math.radians(v) for v in _ql], device=u.device)
+            q[:, fids] = u._hand_shape
         u.robot.write_joint_state_to_sim(q, torch.zeros_like(q))
-        u.targets[:, arm + fids] = 0.0
+        u.targets[:, arm + fids] = q[:, arm + fids]
         u.robot.set_joint_position_target(u.targets)
         hide = u.cfg.pre_hide_scripted_obs
         u.cfg.pre_hide_scripted_obs = False
@@ -265,7 +302,7 @@ if args.raise_policy:
         hand_ids = [u._hand_id] + u.proximal_ids + list(u.fingertip_ids)
         sens = [f"proximal_{i}" for i in (1, 2, 3)] + [f"finger_{i}" for i in (1, 2, 3)]
         contact_max = torch.zeros(u.num_envs, device=u.device)
-        n_max = round(args.raise_max_s * 60)
+        n_max = 0 if CHAIN_TEAM else round(args.raise_max_s * 60)
         if getattr(rc, "raise_mode", "") == "position":
             # as at a v19 reset: the filtered action starts at the one targeting the hanging pose
             filt[:, :8] = ((0.0 - 0.5 * goal) / (0.5 * goal.abs() + rc.raise_position_margin_rad)).clamp(-1.0, 1.0)
@@ -310,6 +347,7 @@ if args.raise_policy:
             env.step(zero_act)
             u.episode_length_buf[:] = 0
             TRACE.append(u.robot.data.joint_pos.clone()); TQ.append((u.robot.data.applied_torque.clone(), u.robot.data.joint_vel.clone()))
+            _ctr("raise")
             p = u.robot.data.body_pos_w[:, hand_ids] - u.scene.env_origins[:, None]
             _ex = rc.raise_table_edge_x if getattr(rc, "raise_table_edge_real_x", None) is None else rc.raise_table_edge_real_x
             x_in = (_ex + rc.raise_edge_margin_m) - p[..., 0]
@@ -346,7 +384,7 @@ if args.raise_policy:
                       "err_max_deg_mean": round(float(torch.rad2deg(err).mean()), 2), "speed_max": round(float(spd.max()), 3)}), flush=True)
             if calm >= 10:
                 break
-        if any(REACH) or ROLL or os.environ.get("REACH_FINAL_GRID_SET"):
+        if (any(REACH) or ROLL or os.environ.get("REACH_FINAL_GRID_SET")) and not CHAIN_TEAM:
             # v39: move the open hand in to the deeper pre-grasp over 0.5 s (joint-space smoothstep between the two
             # exact-IK pre-grasp poses, fingers held), then hold 0.25 s; the episode then starts there, as in training
             tt = torch.full((u.num_envs,), 99.0, device=u.device)
@@ -363,6 +401,10 @@ if args.raise_policy:
                 _Wf = grid_weights(_fb["gx"].to(u.device), _fb["gy"].to(u.device), _co)
                 _G = lambda d: _Wf @ d["dq"][-1].reshape(-1, 8).to(u.device)
                 _e = torch.full((u.num_envs, 1), PATH_DZ, device=u.device)
+                # v80: the final pre-grasp GL_PRE_DZ lower (as the grasp-lift env), its absolute offset floored at GL_PRE_DZ_MIN
+                _e = _e + float(os.environ.get("GL_PRE_DZ", "0"))
+                if os.environ.get("GL_PRE_DZ_MIN"):
+                    _e = _e.clamp_min(float(os.environ["GL_PRE_DZ_MIN"]))
                 q_fin = _G(_fb) + (_e / -0.03).clamp_min(0.0) * (_G(_fm) - _G(_fb)) + (_e / 0.03).clamp_min(0.0) * (_G(_fp) - _G(_fb))
                 dq_in = q_fin - q_sh
             dq_in[:, 6] += ROLL
@@ -396,6 +438,7 @@ if args.raise_policy:
                 env.step(zero_act)
                 u.episode_length_buf[:] = 0
                 TRACE.append(u.robot.data.joint_pos.clone()); TQ.append((u.robot.data.applied_torque.clone(), u.robot.data.joint_vel.clone()))
+                _ctr("reach")
                 cn = torch.stack([torch.linalg.vector_norm(u.scene.sensors[n].data.net_forces_w[:, 0], dim=-1) for n in sens], 1).sum(1)
                 c_in = torch.maximum(c_in, cn)
                 _cd_update(t + (k2 + 1) / 60.0)
@@ -404,6 +447,69 @@ if args.raise_policy:
                 print("CUBE_DIAG " + json.dumps({"first_move_2mm_t_s": _cd["move_t"], "max_move_mm": round(_cd["move_mm"], 1), "links": {n: {"max_n": round(float(_cd["max"][i]), 2), "first_t_s": _cd["t1"].get(n)} for i, n in enumerate(TD_LINKS) if float(_cd["max"][i]) > 0.05}}), flush=True)
             print("REACH_IN " + json.dumps({"reach_m": REACH, "dq_deg_env0": [round(float(v), 2) for v in torch.rad2deg(dq_in[0])],
                   "contact_max_n": round(float(c_in.max()), 2)}), flush=True)
+        if CHAIN_TEAM:
+            from isaaclab_tasks.direct.one_arm_jax_minimal.v2_arm_raise import grid_weights
+            _ldt = lambda n: torch.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), f"data/{n}.pt"))
+            def _team_grid(prefix):
+                b_, m_, p_ = _ldt(prefix + "_basec"), _ldt(prefix + "_m3c"), _ldt(prefix + "_p3c")
+                W_ = grid_weights(b_["gx"].to(u.device), b_["gy"].to(u.device), _co)
+                G_ = lambda d_: W_ @ d_["dq"][-1].reshape(-1, 8).to(u.device)
+                e_ = torch.full((u.num_envs, 1), PATH_DZ + float(os.environ.get("GL_PRE_DZ", "0")), device=u.device)
+                if os.environ.get("GL_PRE_DZ_MIN"):
+                    e_ = e_.clamp_min(float(os.environ["GL_PRE_DZ_MIN"]))
+                return G_(b_) + (e_ / -0.03).clamp_min(0.0) * (G_(m_) - G_(b_)) + (e_ / 0.03).clamp_min(0.0) * (G_(p_) - G_(b_))
+            _bq = torch.tensor([math.radians(v) for v in u.cfg.gl_pregrasp_q_deg], device=u.device)
+            q_fin = _bq + _team_grid("teamf"); q_fin[:, 6] += ROLL
+            q_st = u.targets[:, arm].clone(); fg_keep = u.targets[:, fids].clone()
+            if os.environ.get("CHAIN_TEAM_PATH", "up") == "back":
+                q_bk = _bq + _team_grid("teamb"); q_bk[:, 6] += ROLL
+                seg = [(q_st, q_bk, CHAIN_TEAM_S, "raise"), (q_bk, q_fin, 0.75, "reach"), (q_fin, q_fin, 0.25, "reach")]
+            else:
+                # v81b: the lift reversed - L -> the up pose (the lift IK's pose 8 cm above the pre-grasp, data/teamu_*) -> straight down
+                _ub = _ldt("teamu_basec")
+                _Wu = grid_weights(_ub["gx"].to(u.device), _ub["gy"].to(u.device), _co)
+                KNq = torch.stack([_bq + _Wu @ _ub["dq"][k].reshape(-1, 8).to(u.device) for k in range(_ub["dq"].shape[0])])  # (K, n, 8)
+                KNq[:, :, 6] += ROLL
+                KNq[-1] = q_fin                                    # end exactly on the final pre-grasp (table height blend included)
+                q_bk = KNq[0]
+                seg = [(q_st, q_bk, CHAIN_TEAM_S, "raise"), ("knots", KNq, 2.0, "reach"), ("fingers", q_fin, 0.5, "reach"), (q_fin, q_fin, 0.25, "reach")]
+                # v81b: the hand comes down with the fingers opened wider (CHAIN_TEAM_OPEN_DEG: fingers 1-2, thumb first joints), then closes
+                # back to the training hand shape at the bottom ("fingers" segment): straight down, the thumb tip caught the turned cube's top
+                # edge ~1 cm above the pre-grasp (the hand shape is made for a horizontal reach-in)
+                _op = [float(v) for v in os.environ.get("CHAIN_TEAM_OPEN_DEG", "-15,-15,-30").split(",")]
+                fg_open = fg_keep.clone(); fg_open[:, 0] += math.radians(_op[0]); fg_open[:, 1] += math.radians(_op[1]); fg_open[:, 2] += math.radians(_op[2])
+                fg_open = torch.minimum(torch.maximum(fg_open, u.lower[fids]), u.upper[fids])
+            t = 0.0; c_in = torch.zeros(u.num_envs, device=u.device)
+            for qa_, qb_, dur, ph in seg:
+                n_ = max(1, round(dur * 60))
+                for k2 in range(n_):
+                    x_ = (k2 + 1) / n_; w_ = x_ * x_ * (3.0 - 2.0 * x_)
+                    fg_ = fg_keep if "fg_open" not in dir() else fg_open
+                    if isinstance(qa_, str) and qa_ == "knots":   # descend through the lift knots: smoothstep in the path parameter, piecewise linear
+                        _uu = w_ * (qb_.shape[0] - 1); _k0 = min(int(_uu), qb_.shape[0] - 2); _a = _uu - _k0
+                        tg_ = (1.0 - _a) * qb_[_k0] + _a * qb_[_k0 + 1]
+                    elif isinstance(qa_, str) and qa_ == "fingers":   # arm held, fingers back to the hand shape
+                        tg_ = qb_; fg_ = fg_open + w_ * (fg_keep - fg_open)
+                    else:
+                        tg_ = qa_ + w_ * (qb_ - qa_)
+                        if ph == "reach" and "fg_open" in dir() and qa_ is q_fin:
+                            fg_ = fg_keep
+                    def team_pre(actions, tg_=tg_, fg_=fg_):
+                        u.targets[:, arm] = _lim(tg_, _grav_corr(99.0))
+                        u.targets[:, fids] = fg_
+                    u._pre_physics_step = team_pre
+                    env.step(zero_act)
+                    u.episode_length_buf[:] = 0
+                    t += 1.0 / 60.0
+                    TRACE.append(u.robot.data.joint_pos.clone()); TQ.append((u.robot.data.applied_torque.clone(), u.robot.data.joint_vel.clone()))
+                    _ctr(ph)
+                    cn = torch.stack([torch.linalg.vector_norm(u.scene.sensors[n].data.net_forces_w[:, 0], dim=-1) for n in sens], 1).sum(1)
+                    c_in = torch.maximum(c_in, cn)
+                    _cd_update(t)
+            contact_max = torch.maximum(contact_max, c_in)
+            calm = 10
+            print("TEAM_CHAIN " + json.dumps({"t_s": round(t, 2), "contact_max_n": round(float(c_in.max()), 2),
+                  "q_back_deg_env0": [round(float(v), 1) for v in torch.rad2deg(q_bk[0])], "q_final_deg_env0": [round(float(v), 1) for v in torch.rad2deg(q_fin[0])]}), flush=True)
         if args.table_diag and "rtd" in dir():
             print("RAISE_TABLE_DIAG " + json.dumps({n: {"max_n": round(float(rtd["max"][i]), 1), "first_t_s": rtd["t1"][i]} for i, n in enumerate(TD_LINKS) if float(rtd["max"][i]) > 0.05}), flush=True)
         del u._pre_physics_step  # back to the env's own control
@@ -443,6 +549,8 @@ if args.raise_policy:
             u._lift_offset = torch.zeros_like(a7)
             if hasattr(u, "_bal_q"):
                 del u._bal_q
+            if getattr(u.cfg, "gl_obs_q_target", False):
+                u._tg_prev_step = u.targets.clone()  # v74: target-feedback velocity input starts at the handover
             if hasattr(u, "_gl_yaw_cnt"):
                 u._gl_yaw_cnt[:] = 0  # v70: the live cube-turn input (GL_OBS_YAW=2) takes its references from the handover
         qd = torch.rad2deg(u.robot.data.joint_pos[:, arm]); vd = torch.rad2deg(u.robot.data.joint_vel[:, arm])
@@ -532,6 +640,7 @@ with torch.inference_mode():
     for step in range(args.steps):
         obs, _, _, _ = env.step(policy(obs))
         TRACE.append(u.robot.data.joint_pos.clone()); TQ.append((u.robot.data.applied_torque.clone(), u.robot.data.joint_vel.clone()))
+        _ctr("policy")
         if args.table_diag:
             TDF.append(torch.stack([torch.linalg.vector_norm(u.scene.sensors[f"table_contact_{n}"].data.net_forces_w[:, 0], dim=-1) for n in TD_LINKS], 1))
             # non-cube (table) force on the six finger links, and hand / cube vertical velocity (bounce)
@@ -563,6 +672,16 @@ with torch.inference_mode():
                              "cube_rise_m": round(float(u._cube_rise[i]), 4),
                              "pad_N": [round(float(v), 3) for v in u.pad_forces()[i]],
                              "robot_base_pos_m": [round(float(v), 4) for v in u.robot.data.root_pos_w[i] - o]}
+                    # v80 (user 2026-11-11: camera at floor + 1.215 m, 153 mm ahead of the profile centre line, centred, tilted 45 deg down;
+                    # "normalize"): the same poses in the camera frame - origin at the camera (base_link origin + (-0.153, 0, 1.220) m, the
+                    # base origin is 5 mm under the floor), axes = the robot base axes
+                    from isaaclab.utils.math import quat_apply as _qa, quat_conjugate as _qc, quat_mul as _qm
+                    _rq = u.robot.data.root_quat_w[i:i + 1]; _cam = u.robot.data.root_pos_w[i:i + 1] + _qa(_rq, torch.tensor([[-CAM_FWD, 0.0, CAM_ABOVE_BASE]], device=u.device))
+                    _pc = lambda p_: [round(float(v), 4) for v in _qa(_qc(_rq), p_.reshape(1, 3) - _cam)[0]]
+                    _qcf = lambda q_: [round(float(v), 4) for v in _qm(_qc(_rq), q_.reshape(1, 4))[0]]
+                    HO[i].update({"hand_pos_cam_m": _pc(u.robot.data.body_pos_w[i, u._hand_id]), "hand_quat_cam_wxyz": _qcf(hq),
+                                  "fingertip_mid_cam_m": _pc(tip), "cube_pos_cam_m": _pc(u.object.data.root_pos_w[i]),
+                                  "cube_quat_cam_wxyz": _qcf(u.object.data.root_quat_w[i])})
                     if i == 0:
                         print("LIFT_DONE " + json.dumps(HO[i]), flush=True)
         if step % 60 == 59:
@@ -585,7 +704,8 @@ if globals().get("HO") is not None:
     with open(os.path.join(video_dir, "handover_state.json"), "w") as f:
         json.dump({"note": "state at lift_done (arm at the L, still, gripping, cube >= 4 cm up for 0.5 s); env-origin frame, m / deg; "
                            "arm_q_deg = 7 arm joints + RotationBody, finger_q_deg = fingers 1,2,thumb first joints then second joints, "
-                           "pad_N = [finger1,finger2,thumb first links, finger1,finger2,thumb distal]", "joint_names_arm": [u.robot.joint_names[j] for j in u.arm_ids],
+                           "pad_N = [finger1,finger2,thumb first links, finger1,finger2,thumb distal]; *_cam_* = the same in the camera frame (origin at the "
+                           "camera: 153 mm ahead (base -x) of the profile centre line, floor + 1.215 m = table top + 0.48 m; axes = robot base axes: x = world -y, y = world +x, z up)", "joint_names_arm": [u.robot.joint_names[j] for j in u.arm_ids],
                    "joint_names_fingers": [u.robot.joint_names[j] for j in u.finger_ids], "envs": HO}, f, indent=1)
 if args.raise_policy:
     chain["episode_table_force_mean_n"] = round(chain.pop("_tf_sum", 0.0) / args.steps, 3)
@@ -635,5 +755,13 @@ if args.raise_policy:
     json.dump(chain, open(os.path.join(video_dir, "chain.json"), "w"))
 json.dump(rows, open(os.path.join(video_dir, "front_grasp.json"), "w"))
 print("FRONT_GRASP_DIR=" + video_dir, flush=True)
+if CHAIN_TRACE:
+    _sp = u.robot.body_names.index("base_link"); _o = u.scene.env_origins[0]  # Shoulder_Pitch is merged into base_link (fixed joint)
+    json.dump({"joint_names": list(u.robot.joint_names), "dt": float(u.step_dt), "cube_size": float(u.cfg.object_size[0]) if hasattr(u.cfg, "object_size") else 0.05,
+               "base_link_p": [float(v) for v in u.robot.data.body_pos_w[0, _sp] - _o], "base_link_q": [float(v) for v in u.robot.data.body_quat_w[0, _sp]],
+               "table_center": [float(v) for v in u.table.data.root_pos_w[0] - _o] if hasattr(u, "table") else None,
+               "table_size": [float(v) for v in u.cfg.table_cfg.spawn.size] if hasattr(u.cfg.table_cfg, "spawn") else [float(v) for v in u.cfg.table_cfg.size],
+               "steps": CTR}, open(CHAIN_TRACE, "w"))
+    print("CHAIN_TRACE", CHAIN_TRACE, len(CTR), "steps", flush=True)
 env.close()
 simulation_app.close()

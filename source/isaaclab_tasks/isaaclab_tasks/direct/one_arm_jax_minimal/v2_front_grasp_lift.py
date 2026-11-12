@@ -286,6 +286,10 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     # (-0.991, -0.125, 0.044)); shoulder yaw +7.2 and wrist pitch -2.6 deg make it (-1, 0, 0)
     # (artifacts/claude_scripts/v31_wrist_probe.py). Wrist yaw / forearm cannot: at the L they roll the hand.
     lift_return_q_deg = (1.9, 0.0, 7.2, 92.1, 0.0, -1.9, -0.2)
+    # v73 (user 2026-11-09: the real AK45 arm runs in servo mode - no gravity sag): GL_RET_Q_DEG="7 values" overrides the L
+    # target (servo: the geometric L 0, 0, 7.2, 90.0, 0, -2.6, 0 = the command above minus the fixed sag offsets)
+    if os.environ.get("GL_RET_Q_DEG"):
+        lift_return_q_deg = tuple(float(v) for v in os.environ["GL_RET_Q_DEG"].split(","))
     # v33 sensorless version (user 2026-11-04: pressure sensors not delivered; keep the sensor version and
     # build sim-to-real on a sensorless one). GL_NO_PAD=1: policy pad inputs read 0 and the balanced close
     # and lift_done use the grip force estimated from the finger drive torque instead of the pad forces.
@@ -303,6 +307,19 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     # v72 probe: GL_PRE_DZ (m) - pre-grasp hand height offset through the table-height blend of the lookup, table unmoved
     # (V3 fingertips sit 1-2.6 mm higher than V2's at the same joint angles: hand 3.5 mm nearer the wrist)
     gl_pre_dz = float(os.environ.get("GL_PRE_DZ", "0"))
+    # v80 (user 2026-11-11: "train so the finger that does not touch touches the cube as much as possible"): finger 1 (the top
+    # finger at the pre-grasp, hand y axis pointing down) missed the cube in 26-28 % of the held envs (its first joint at the
+    # 30 deg close cap, its link origins 3-4 cm above the cube top); a pre-grasp 1 cm lower (GL_PRE_DZ=-0.01) took that to 5 %
+    # with 25550 as it is. GL_PRE_DZ_RAND="lo,hi" (m) draws the offset per episode instead (training: robust to a hand-height
+    # error); GL_DIGIT_MIN=k pays k x hold x 3 x min over the three digits of (first + distal pad force) / GL_DISTAL_SAT (0-1),
+    # i.e. for the weakest digit's contact (the distal-grip term took min(thumb, max(finger 1, finger 2)))
+    gl_pre_dz_rand = tuple(float(v) for v in os.environ["GL_PRE_DZ_RAND"].split(",")) if os.environ.get("GL_PRE_DZ_RAND") else None
+    gl_digit_min_scale = float(os.environ.get("GL_DIGIT_MIN", "0"))
+    # v80b: GL_PRE_DZ_MIN=m (m) - the pre-grasp's absolute height offset (table offset + GL_PRE_DZ) is kept >= m: 25550 lifted 39 /
+    # 20 % with the table 2 / 3 cm low (near spots x -12 / -14 cm: shoulder pitch, shoulder yaw and wrist pitch at their limits,
+    # the lift stalled 13 cm short), so with the table 1 cm low the 1 cm lower pre-grasp (absolute -2 cm) held 43 %. With m =
+    # -0.01 the hand goes 1 cm lower at the nominal table and stays as before at the 1 cm lower table
+    gl_pre_dz_min = float(os.environ["GL_PRE_DZ_MIN"]) if os.environ.get("GL_PRE_DZ_MIN") else None
     gl_shift_grid_dzm3_path = "data/v34c_shift_grid_dzm3.pt"  # as v2_arm_raise.JaxV2RaiseCubeWideEnvCfg
     gl_shift_grid_dzp3_path = "data/v34c_shift_grid_dzp3.pt"
     # v35 (user 2026-11-04: grasp unstable as y changes): the fingers only reached the robot-side ~2 cm of
@@ -339,6 +356,14 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
         object_cfg = JaxV2FrontLiftRLEnvCfg().object_cfg.replace(
             spawn=JaxV2FrontLiftRLEnvCfg().object_cfg.spawn.replace(physics_material=_mat))
         sim = JaxV2FrontLiftRLEnvCfg().sim.replace(physics_material=_mat)
+    # v77 (user 2026-11-10: "cube friction 2.0 - the cube only"): GL_CUBE_MU="static,dynamic" sets the cube's own material
+    # after GL_MU (the robot keeps GL_MU, the table its 1.2/1.0). PhysX averages the two materials of a contact, so
+    # finger-cube = (cube + robot) / 2 (2.0 with 0.4 -> 1.2) and cube-table = (cube + 1.2) / 2 (2.0 -> 1.6).
+    if os.environ.get("GL_CUBE_MU"):
+        _cmu = [float(v) for v in os.environ["GL_CUBE_MU"].split(",")]
+        _cmat = sim_utils.RigidBodyMaterialCfg(static_friction=_cmu[0], dynamic_friction=_cmu[1], restitution=0.0)
+        _ocfg = object_cfg if "object_cfg" in locals() else JaxV2FrontLiftRLEnvCfg().object_cfg
+        object_cfg = _ocfg.replace(spawn=_ocfg.spawn.replace(physics_material=_cmat))
     # v36: squeeze total = close_squeeze_n + close_squeeze_range_n x action 7; GL_SQUEEZE="base,range" (N), and
     # GL_FIRST_MAX="f1,f2,thumb" (deg) the first-joint close limits (the thumb stopped at 0 deg short of the force)
     if os.environ.get("GL_SQUEEZE"):
@@ -385,6 +410,14 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
             gl_shift_grid_path = f"data/{_gs}_basec.pt"
             gl_shift_grid_dzm3_path = f"data/{_gs}_m3c.pt"
             gl_shift_grid_dzp3_path = f"data/{_gs}_p3c.pt"
+    # v81 (user 2026-11-11: "the table goes where MuJoCo has it, no matter what"): GL_TABLE_TEAM=1 - the team-jax/IK (JAX_SETUP=real)
+    # layout: table in front of the robot along base -x (world +y here), profile centre line (world y 0.01) -> near edge 0.16 m, far
+    # edge 0.65 m, left-right +/-0.355 m, same height. The cube stays at its reference spot + the offset box (the team's cube band
+    # is offsets dx +0.01..+0.26, dy +0.22..+0.30 m); pre-grasp grids / turn table / mask for it: GL_GRID_SET=teamf,
+    # GL_OBS_YAW_THETA=data/team_valid.pt, GL_CUBE_MASK=data/team_mask.pt
+    if os.environ.get("GL_TABLE_TEAM"):
+        table_center = (0.0, 0.415, table_center[2] if "table_center" in dir() else 0.72)
+        table_cfg = (table_cfg if "table_cfg" in dir() else JaxV2FrontLiftRLEnvCfg().table_cfg).replace(size=(0.71, 0.49, 0.04))
     # v41b (user: "the cube angle changing while lifting is annoying"): GL_ROT sets the cube-rotation cost (per rad)
     if os.environ.get("GL_ROT"):
         gl_rot_cost = float(os.environ["GL_ROT"])
@@ -416,7 +449,26 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     # v70: GL_OBS_YAW=2 - the same input followed live: + the cube's turn since the start - the hand's heading change since the
     # start (fingertip direction), both about world z, + a per-step error U(+/- GL_OBS_YAW_STEP_NOISE_DEG) (default 2 deg), so the
     # policy sees whether the cube squared up during the close and whether it turns in the hand while lifted
-    gl_obs_yaw_live = os.environ.get("GL_OBS_YAW", "") == "2"
+    gl_obs_yaw_live = os.environ.get("GL_OBS_YAW", "") in ("2", "3")
+    # v79: GL_OBS_YAW=3 - live like 2, but the turns are twist angles about world z of the cube's and the hand's orientation
+    # change since the start (2 used the fingertip direction for the hand, which the hand's own turn about the vertical moves
+    # only through its horizontal part)
+    gl_obs_yaw_twist = os.environ.get("GL_OBS_YAW", "") == "3"
+    # v79 (user 2026-11-11: "for MuJoCo, when the cube is turned, guide it to the front in Isaac"; 25550 kept the turn: in-hand
+    # 22.9 deg at the start -> 20.6 deg at lift_done): GL_PRE_YAW="s,max_deg" - before the fingers close, the lift IK turns the
+    # hand about the world vertical around the grasp point by the measured cube turn relative to the hand (the yaw input's psi,
+    # folded to +/-45 deg, capped at max_deg), the fingers held open and the lift commands off for s seconds; then the usual
+    # grasp, so the cube sits square in the hand and comes to the L hand-over front-facing. GL_SQUARE=k costs k per rad of the
+    # cube's in-hand turn from square (folded to +/-45 deg) while it is held off the table, until the L return (needs GL_OBS_YAW=3)
+    pre_yaw = tuple(float(v) for v in os.environ["GL_PRE_YAW"].split(",")) if os.environ.get("GL_PRE_YAW") else None
+    gl_square_cost = float(os.environ.get("GL_SQUARE", "0"))
+    # v79: GL_RET_YAW="c_deg[,max_deg]" - the L return turns the arm about the vertical (shoulder yaw, Isaac 2: the upper arm hangs
+    # straight down at the L) by the cube's estimated in-hand turn + c_deg (the L hand heading against the robot's front), folded to
+    # +/-45 deg and capped, so the cube reaches the hand-over front-facing (square to the robot); the estimate is the yaw input's
+    # value at the return start (camera turn at the pre-grasp + tracked turn since, GL_OBS_YAW=3)
+    # v80: a third value 1 ("0,45,1") re-measures the turn at the return start (camera on the lifted cube): + the cube's turn in the
+    # hand since the pre-grasp, which the first reading misses (x -14, y +6 cm: 12-19 deg left at the hand-over)
+    ret_yaw = tuple(float(v) for v in os.environ["GL_RET_YAW"].split(",")) if os.environ.get("GL_RET_YAW") else None
     gl_obs_yaw_step_noise_deg = float(os.environ.get("GL_OBS_YAW_STEP_NOISE_DEG", "2"))
     if gl_obs_yaw:
         observation_space = 45
@@ -432,13 +484,20 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     close_rl_grip = bool(os.environ.get("GL_FINGER_RL"))
     close_rl_force_base_n = 5.0
     close_rl_force_range_n = 4.0
+    # v76 (user 2026-11-10: the finger servos are MG90S, 0.177 N*m stall -> about 1.6 N at the distal pad; 5 + 4 a asked for
+    # 1-9 N, almost all out of reach, and fingers 1+2 out-pushed the thumb): GL_RL_FORCE="base,range" (N) overrides the squeeze
+    # mapping S = base + range x action (actions 7 fingers-side total, 9 thumb)
+    if os.environ.get("GL_RL_FORCE"):
+        close_rl_force_base_n, close_rl_force_range_n = [float(v) for v in os.environ["GL_RL_FORCE"].split(",")]
     close_rl_curl_deg = 60.0
     close_rl_force_max_n = float(os.environ["GL_RL_FORCE_MAX"]) if os.environ.get("GL_RL_FORCE_MAX") else None  # v47b
     # v48 (user 2026-11-04: "the first joint should sit fully on the cube", "grip deeper"): GL_PROX=scale rewards the
     # first-joint (proximal) pads on the cube while the distal grip holds: scale x sum over the 3 pads of
     # min(force / gl_prox_sat_n, 1). With the hand 1.5 cm deeper the trained policy let them go (0.2-0.5 -> 0.02-0.3 N).
     gl_prox_scale = float(os.environ.get("GL_PROX", "0"))
-    gl_prox_sat_n = 0.5
+    # v78 (2026-11-10, MG90S fingers): GL_PROX_SAT (N) - the first-joint pad force that earns the full prox reward (default
+    # 0.5); 25150 under the motor limits pressed the first links at 0.002-0.05 N each, far below the 0.5 N saturation
+    gl_prox_sat_n = float(os.environ.get("GL_PROX_SAT", "0.5"))
     # v48e: GL_PROX_MIN=k adds k x 3 x min over the 3 first-joint pads of min(F / gl_prox_sat_n, 1): the sum alone let one
     # finger carry it (v48d 11925 at lift_done: 0.17 / 1.04 / 0.00 N, thumb off; v48c 11750: 0.13 / 0.45 / 0.34 N)
     gl_prox_min_scale = float(os.environ.get("GL_PROX_MIN", "0"))
@@ -473,6 +532,16 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     # (dynamic = static - 0.05), so the cube-finger contact uses it as is; v48i2 12750 (trained at 0.4/0.35) held 99.3%
     # at 0.4 but 93.8% at 0.35/0.3
     gl_mu_rand = tuple(float(v) for v in os.environ["GL_MU_RAND"].split(",")) if os.environ.get("GL_MU_RAND") else None
+    # v77: GL_CUBE_MU_RAND="lo,hi" - per-episode cube static friction (dynamic 0.05 lower), cube only, applied after
+    # GL_MU_RAND (which keeps drawing the robot's); harsh episodes draw it from gl_harsh_cube_mu
+    gl_cube_mu_rand = tuple(float(v) for v in os.environ["GL_CUBE_MU_RAND"].split(",")) if os.environ.get("GL_CUBE_MU_RAND") else None
+    gl_harsh_cube_mu = (1.5, 1.7)
+    # v77b (user 2026-11-10: "the fingers 2.0 too"): GL_FINGER_MU="static,dynamic" sets every Finger_* link's shapes at each
+    # reset (after GL_MU_RAND, which still draws the rest of the robot); GL_FINGER_MU_RAND="lo,hi" draws it per episode instead
+    # (dynamic 0.05 lower, harsh episodes from gl_harsh_finger_mu). Finger 2.0 with cube 2.0 -> finger-cube 2.0.
+    gl_finger_mu = tuple(float(v) for v in os.environ["GL_FINGER_MU"].split(",")) if os.environ.get("GL_FINGER_MU") else None
+    gl_finger_mu_rand = tuple(float(v) for v in os.environ["GL_FINGER_MU_RAND"].split(",")) if os.environ.get("GL_FINGER_MU_RAND") else None
+    gl_harsh_finger_mu = (1.5, 1.7)
     # v50 (sim-to-real checks, all off by default): GL_ACT_DELAY=k - policy actions take effect k control steps late;
     # GL_KP_SCALE="lo,hi" - arm and finger drive stiffness and damping x U(lo, hi) per episode (the gravity hold keeps
     # using the nominal kp, as a real controller that does not know the servo gains would); GL_CUBE_MASS="lo,hi" - cube
@@ -483,6 +552,22 @@ class JaxV2FrontGraspLiftEnvCfg(JaxV2FrontLiftRLEnvCfg):
     gl_kp_scale = tuple(float(v) for v in os.environ["GL_KP_SCALE"].split(",")) if os.environ.get("GL_KP_SCALE") else None
     # v54 diagnosis: GL_KP_PART=arm|finger applies the GL_KP_SCALE draw to that group only (default: all joints)
     gl_kp_part = os.environ.get("GL_KP_PART", "all")
+    # v74 (user 2026-11-09: the real AK45 arm runs in servo mode): GL_SERVO_ARM="lo,hi" - per episode the arm drives (7 arm
+    # joints + RotationBody) get kp / kd x U(lo, hi) after any GL_KP_SCALE draw (fingers keep that draw), and the start-pose
+    # hold uses the ACTUAL kp, so the stiff arm sits exactly on the geometric pose like a servo commanded that pose
+    gl_servo_arm = tuple(float(v) for v in os.environ["GL_SERVO_ARM"].split(",")) if os.environ.get("GL_SERVO_ARM") else None
+    # v74 (user 2026-11-09: "our feedback is the target angle we send, not the encoder"): GL_OBS_Q_TARGET=1 - the policy's
+    # joint inputs read the sent joint targets (obs 0-13) and their change over the control step / dt (obs 14-27, x 0.2)
+    # instead of the measured joint positions and velocities
+    gl_obs_q_target = bool(os.environ.get("GL_OBS_Q_TARGET"))
+    # v75 (teammate 2026-11-10: the sim fingers had a 100 N*m torque limit - real MG996R hobby servos stall near 0.9 N*m at
+    # 4.8 V, 1.1 N*m at 6 V; the thumb first joint held 0.82 N*m median / 1.35 p95 while lifting): GL_FINGER_EFFORT="lo,hi"
+    # (N*m) - per episode the 6 finger joints get a PhysX max drive torque from U(lo, hi) ("x" or "x,x" fixed)
+    gl_finger_effort = tuple(float(v) for v in os.environ["GL_FINGER_EFFORT"].split(",")) if os.environ.get("GL_FINGER_EFFORT") else None
+    # v76 (user 2026-11-10: match the real motors' torque limits - AK45-36 rated 8 / peak 24 N*m): GL_ARM_EFFORT="8 values" (N*m,
+    # arm group order: shoulder pitch, roll, yaw, elbow, forearm roll, wrist pitch, wrist yaw, RotationBody) - PhysX max drive
+    # torque per arm joint, fixed
+    gl_arm_effort = tuple(float(v) for v in os.environ["GL_ARM_EFFORT"].split(",")) if os.environ.get("GL_ARM_EFFORT") else None
     gl_cube_mass = tuple(float(v) for v in os.environ["GL_CUBE_MASS"].split(",")) if os.environ.get("GL_CUBE_MASS") else None
     # v66: GL_HARSH_FRAC=f - that share of episodes draws friction, drive gains, cube mass and action delay together from their
     # harsh ends (the combined case was the weakest: each was drawn alone from its full range, so all at once was rare)
@@ -578,7 +663,11 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             obs["policy"][:, 34:37] += e
         if self.cfg.gl_obs_yaw:
             yr = self._gl_yaw_rel if hasattr(self, "_gl_yaw_rel") else torch.zeros(self.num_envs, device=self.device)
-            if self.cfg.gl_obs_yaw_live and hasattr(self, "_gl_yaw_cnt"):
+            if self.cfg.gl_obs_yaw_twist and hasattr(self, "_gl_yaw_cnt"):
+                nz = math.radians(self.cfg.gl_obs_yaw_step_noise_deg) * (2.0 * torch.rand(self.num_envs, device=self.device) - 1.0)
+                yr = yr + self._gl_twist_delta(capture=True) + nz
+                self._gl_yaw_cnt += 1
+            elif self.cfg.gl_obs_yaw_live and hasattr(self, "_gl_yaw_cnt"):
                 from isaaclab.utils.math import quat_apply as _qa
                 _ex = torch.zeros((self.num_envs, 3), device=self.device); _ex[:, 0] = 1.0
                 _xc = _qa(self.object.data.root_quat_w, _ex); yc = torch.atan2(_xc[:, 1], _xc[:, 0])
@@ -597,7 +686,24 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
                     obs[k] = torch.cat((obs[k], extra), dim=1)
         return obs
 
+    def _gl_twist_delta(self, capture: bool) -> torch.Tensor:
+        """v79: the cube's turn minus the hand's turn about world z since the references (taken by the observation one physics
+        step after the reset, when _gl_yaw_cnt is 1), as twist angles of the orientation changes."""
+        from isaaclab.utils.math import quat_mul, quat_conjugate
+        cq = self.object.data.root_quat_w; hq = self.robot.data.body_quat_w[:, self._hand_id]
+        if not hasattr(self, "_gl_tw_c0"):
+            self._gl_tw_c0 = cq.clone(); self._gl_tw_h0 = hq.clone()
+        if capture:
+            cap = (self._gl_yaw_cnt == 1)[:, None]
+            self._gl_tw_c0 = torch.where(cap, cq, self._gl_tw_c0); self._gl_tw_h0 = torch.where(cap, hq, self._gl_tw_h0)
+        w = lambda a: torch.remainder(a + math.pi, 2.0 * math.pi) - math.pi
+        tw = lambda q: w(2.0 * torch.atan2(q[:, 3], q[:, 0]))
+        d = w(tw(quat_mul(cq, quat_conjugate(self._gl_tw_c0))) - tw(quat_mul(hq, quat_conjugate(self._gl_tw_h0))))
+        return torch.where(self._gl_yaw_cnt >= (1 if capture else 2), d, torch.zeros_like(d))
+
     def _pre_physics_step(self, actions):
+        if self.cfg.gl_obs_q_target:
+            self._tg_prev_step = self.targets.clone()  # v74: the targets sent during the last control step
         lo, hi = self.cfg.gl_act_delay
         if hi > 0:
             # v50: actions take effect d control steps late, d per env in [lo, hi] (drawn at reset)
@@ -640,6 +746,40 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             if not hasattr(self, "_gl_mu"):
                 self._gl_mu = torch.zeros(self.num_envs)
             self._gl_mu[ids_cpu] = mu_s
+        if c.gl_cube_mu_rand:
+            ids_cpu = ids.detach().cpu() if torch.is_tensor(ids) else torch.as_tensor(ids)
+            mu_c = torch.empty(len(ids_cpu)).uniform_(c.gl_cube_mu_rand[0], c.gl_cube_mu_rand[1])
+            if hm is not None:
+                mu_c = torch.where(hm.cpu(), torch.empty(len(ids_cpu)).uniform_(c.gl_harsh_cube_mu[0], c.gl_harsh_cube_mu[1]), mu_c)
+            mats = self.object.root_physx_view.get_material_properties()
+            mats[ids_cpu, :, 0] = mu_c[:, None]
+            mats[ids_cpu, :, 1] = (mu_c - 0.05).clamp_min(0.05)[:, None]
+            self.object.root_physx_view.set_material_properties(mats, ids_cpu)
+        if c.gl_finger_mu or c.gl_finger_mu_rand:
+            if not hasattr(self, "_finger_shape_idx"):
+                counts, names = [], []
+                for lp in self.robot.root_physx_view.link_paths[0]:
+                    counts.append(self.robot._physics_sim_view.create_rigid_body_view(lp).max_shapes); names.append(lp.split("/")[-1])
+                assert sum(counts) == self.robot.root_physx_view.max_shapes, (counts, self.robot.root_physx_view.max_shapes)
+                idx = []
+                for k, nm in enumerate(names):
+                    if nm.lower().startswith("finger"):
+                        idx += list(range(sum(counts[:k]), sum(counts[:k]) + counts[k]))
+                self._finger_shape_idx = torch.tensor(idx, dtype=torch.long)
+                print("GL_FINGER_MU links", [nm for nm in names if nm.lower().startswith("finger")], "shapes", len(idx), "of", sum(counts), flush=True)
+            ids_cpu = ids.detach().cpu() if torch.is_tensor(ids) else torch.as_tensor(ids)
+            if c.gl_finger_mu_rand:
+                mu_f = torch.empty(len(ids_cpu)).uniform_(c.gl_finger_mu_rand[0], c.gl_finger_mu_rand[1])
+                if hm is not None:
+                    mu_f = torch.where(hm.cpu(), torch.empty(len(ids_cpu)).uniform_(c.gl_harsh_finger_mu[0], c.gl_harsh_finger_mu[1]), mu_f)
+                mu_fd = (mu_f - 0.05).clamp_min(0.05)
+            else:
+                mu_f = torch.full((len(ids_cpu),), c.gl_finger_mu[0]); mu_fd = torch.full((len(ids_cpu),), c.gl_finger_mu[1])
+            mats = self.robot.root_physx_view.get_material_properties()
+            fi = self._finger_shape_idx[None, :]
+            mats[ids_cpu[:, None], fi, 0] = mu_f[:, None]
+            mats[ids_cpu[:, None], fi, 1] = mu_fd[:, None]
+            self.robot.root_physx_view.set_material_properties(mats, ids_cpu)
         if c.gl_kp_scale:
             if not hasattr(self, "_kp_nom"):
                 self._kp_nom = self.robot.data.joint_stiffness.clone(); self._kd_nom = self.robot.data.joint_damping.clone()
@@ -652,6 +792,24 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
                 ks = torch.where(sel[None, :], ks, torch.ones_like(ks))
             self.robot.write_joint_stiffness_to_sim(self._kp_nom[ids] * ks, env_ids=ids)
             self.robot.write_joint_damping_to_sim(self._kd_nom[ids] * ks, env_ids=ids)
+        if c.gl_arm_effort:
+            # v76: arm motor torque limits (see the cfg)
+            ae = torch.tensor(c.gl_arm_effort, device=self.device)[None, :].expand(n, -1).contiguous()
+            self.robot.write_joint_effort_limit_to_sim(ae, joint_ids=list(self.arm_ids), env_ids=ids)
+        if c.gl_finger_effort:
+            # v75: finger servo torque limit (see the cfg)
+            fe = torch.empty((n, 1), device=self.device).uniform_(c.gl_finger_effort[0], c.gl_finger_effort[-1]).expand(-1, len(self.finger_ids)).contiguous()
+            self.robot.write_joint_effort_limit_to_sim(fe, joint_ids=list(self.finger_ids), env_ids=ids)
+        if c.gl_servo_arm:
+            # v74: servo-mode arm (see the cfg): stiffer arm drives, held at the actual kp below
+            if not hasattr(self, "_kp_nom"):
+                self._kp_nom = self.robot.data.joint_stiffness.clone(); self._kd_nom = self.robot.data.joint_damping.clone()
+            sa = torch.empty((n, 1), device=self.device).uniform_(c.gl_servo_arm[0], c.gl_servo_arm[1])
+            arm_all = list(self.arm_ids)
+            st = self.robot.data.joint_stiffness[ids].clone(); dp = self.robot.data.joint_damping[ids].clone()
+            st[:, arm_all] = self._kp_nom[ids][:, arm_all] * sa; dp[:, arm_all] = self._kd_nom[ids][:, arm_all] * sa
+            self.robot.write_joint_stiffness_to_sim(st, env_ids=ids)
+            self.robot.write_joint_damping_to_sim(dp, env_ids=ids)
         if c.gl_cube_mass:
             ids_c = ids.detach().cpu() if torch.is_tensor(ids) else torch.as_tensor(ids)
             ms = self.object.root_physx_view.get_masses()
@@ -758,6 +916,9 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             cy = self._gl_cube_yaw[ids] if hasattr(self, "_gl_cube_yaw") else torch.zeros(n, device=self.device)
             err = torch.deg2rad(c.gl_obs_yaw_noise_deg * (2.0 * torch.rand(n, device=self.device) - 1.0))
             self._gl_yaw_rel[ids] = cy - th + err
+            if not hasattr(self, "_gl_psi0"):
+                self._gl_psi0 = torch.zeros(self.num_envs, device=self.device)
+            self._gl_psi0[ids] = cy - th  # v79: the true turn (no camera error), for the GL_SQUARE cost
             if c.gl_obs_yaw_live:
                 if not hasattr(self, "_gl_yaw_cnt"):
                     self._gl_yaw_cnt = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -783,6 +944,11 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             gx, gy, G = self._gl_grid
             Wg = grid_weights(gx, gy, off + off.new_tensor([c.gl_reach_dx_m, c.gl_reach_dy_m]) + (self._obs_cube_bias[ids][:, :2] if (c.gl_obs_cube_noise and hasattr(self, "_obs_cube_bias")) else 0.0))
             dzg = dz - c.gl_table_z0 + c.gl_pre_dz  # v53: the grid set is built at gl_table_z0; v72: + GL_PRE_DZ
+            if c.gl_pre_dz_rand:
+                lo_, hi_ = c.gl_pre_dz_rand
+                dzg = dz - c.gl_table_z0 + lo_ + (hi_ - lo_) * torch.rand(n, device=self.device)  # v80: per episode
+            if c.gl_pre_dz_min is not None:
+                dzg = torch.clamp(dzg, min=c.gl_pre_dz_min)  # v80b: absolute floor
             q8 = q8 + (dzg / -0.03).clamp_min(0.0)[:, None] * (Wg @ self._gl_grid_m - Wg @ G)
             q8 = q8 + (dzg / 0.03).clamp_min(0.0)[:, None] * (Wg @ self._gl_grid_p - Wg @ G)
         if c.gl_roll_deg:
@@ -807,11 +973,16 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             # offsets fit the old layout's pre-grasp; elsewhere they over- or under-shot and the arm drifted, 4-11 mm up
             # in the 22.5 cm table layout, which the policy fought by pressing the cube down and rolling it)
             grav = self.robot.root_physx_view.get_gravity_compensation_forces()[ids][:, arm]
-            kp = (self.robot.data.joint_stiffness if c.gl_grav_comp_actual_kp else (self._kp_nom if hasattr(self, "_kp_nom") else self.robot.data.joint_stiffness))[ids][:, arm].clamp_min(1e-3)
+            kp = (self.robot.data.joint_stiffness if (c.gl_grav_comp_actual_kp or c.gl_servo_arm) else (self._kp_nom if hasattr(self, "_kp_nom") else self.robot.data.joint_stiffness))[ids][:, arm].clamp_min(1e-3)
             tg8 = q8 + grav / kp
             targets[:, arm] = tg8
             self.targets[ids] = targets
         self.robot.set_joint_position_target(targets, env_ids=ids)
+        if c.gl_obs_q_target:
+            # v74: the target-feedback velocity input starts at 0 for a fresh episode
+            if not hasattr(self, "_tg_prev_step"):
+                self._tg_prev_step = self.targets.clone()
+            self._tg_prev_step[ids] = self.targets[ids]
         # the episode starts at the close; holds latch to these targets
         self.episode_length_buf[ids] = round(c.close_after_s / self.step_dt)
         # create the holds here: created lazily in the first step they would latch the
@@ -917,6 +1088,10 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
                 terms["distal"] = c.gl_distal_scale * hold * 3.0 * dgrip
             if c.gl_prox_need_distal:
                 terms["prox"] = terms["prox"] * dgrip
+        if c.gl_digit_min_scale:
+            dsat = ((pf_all[:, :3] + pf_all[:, 3:]) / c.gl_distal_sat_n).clamp(0.0, 1.0)
+            terms["digit_min"] = c.gl_digit_min_scale * hold * 3.0 * dsat.amin(dim=1)
+            log["gl_f1_touch"] = (((pf_all[:, 0] + pf_all[:, 3]) >= c.close_touch_n).float() * hold * closing).sum() / (hold * closing).sum().clamp_min(1.0)
         if c.gl_slip_cost:
             tips_z = self.robot.data.body_pos_w[:, self.fingertip_ids, 2].mean(dim=1)
             if not hasattr(self, "_gl_tips_z0"):
@@ -932,8 +1107,14 @@ class JaxV2FrontGraspLiftEnv(JaxV2FrontLiftRLEnv):
             tilt_abs = torch.acos(quat_apply(self.object.data.root_quat_w, ez)[:, 2].clamp(-1.0, 1.0))
             terms["tilt"] = -c.gl_tilt_cost * tilt_abs * (rise > c.gl_liftoff_m).float()
             log["gl_tilt_deg"] = torch.rad2deg((tilt_abs * (rise > c.gl_liftoff_m).float() * closing).sum() / closing.float().sum().clamp_min(1.0))
+        if c.gl_square_cost:
+            assert c.gl_obs_yaw_twist, "GL_SQUARE needs GL_OBS_YAW=3"
+            sq = torch.remainder(self._gl_psi0 + self._gl_twist_delta(capture=False) + math.pi / 4, math.pi / 2) - math.pi / 4
+            upf = (rise > c.gl_liftoff_m).float()
+            terms["square"] = -c.gl_square_cost * sq.abs() * hold * upf
+            log["gl_square_deg"] = torch.rad2deg((sq.abs() * hold * upf * closing).sum() / (hold * upf * closing).sum().clamp_min(1.0))
         if ret is not None:
-            for k in ("xy", "xy_vel", "rot", "angvel", "hand_rot", "over", "late", "drag", "tilt"):
+            for k in ("xy", "xy_vel", "rot", "angvel", "hand_rot", "over", "late", "drag", "tilt", "square"):
                 if k in terms:
                     terms[k] = terms[k] * (1.0 - ret)
         reward = closing.float() * sum(terms.values()) * c.gl_reward_scale

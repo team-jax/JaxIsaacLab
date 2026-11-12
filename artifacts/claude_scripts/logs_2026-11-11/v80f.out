@@ -1,0 +1,28 @@
+BASE_MEAN 0.8866 2026-11-11_04-57-42_v78d_r9/model_25550.pt (from v80d, same evals)
+== ROUND 1 from 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+TRAIN gl_lifted 0.6882 rot 16.9451 @25600
+TRAIN gl_lifted 0.6259 rot 18.2049 @25675
+TRAIN gl_lifted 0.6018 rot 15.7403 @25749
+EVAL 2026-11-11_15-21-29_v80f_r1/model_25625.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.847 4.8 1.9 0.809 5.5 2.5 0.188 0.002 0.865 0.852 0.882 0.82
+EVAL 2026-11-11_15-21-29_v80f_r1/model_25725.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.814 5.0 2.1 0.795 5.4 2.3 0.219 0.004 0.861 0.844 0.863 0.80
+BEST_OF v80f_r1 2026-11-11_15-21-29_v80f_r1/model_25625.pt 0.8613
+== ROUND 2 from 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+TRAIN gl_lifted 0.6852 rot 16.9443 @25600
+TRAIN gl_lifted 0.6216 rot 18.2640 @25675
+TRAIN gl_lifted 0.5879 rot 15.3422 @25749
+EVAL 2026-11-11_15-37-32_v80f_r2/model_25625.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.849 4.6 1.9 0.832 5.3 2.9 0.181 0.003 0.845 0.854 0.870 0.80
+EVAL 2026-11-11_15-37-32_v80f_r2/model_25725.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.861 5.1 2.5 0.780 5.2 3.0 0.171 0.002 0.833 0.866 0.856 0.72
+BEST_OF v80f_r2 2026-11-11_15-37-32_v80f_r2/model_25625.pt 0.8583
+== ROUND 3 from 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+TRAIN gl_lifted 0.6817 rot 17.1024 @25600
+TRAIN gl_lifted 0.6282 rot 18.5419 @25675
+TRAIN gl_lifted 0.5854 rot 15.6525 @25749
+EVAL 2026-11-11_15-53-37_v80f_r3/model_25625.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.851 5.1 2.0 0.800 5.1 2.2 0.183 0.009 0.866 0.859 0.854 0.76
+EVAL 2026-11-11_15-53-37_v80f_r3/model_25725.pt nom(held tilt yaw) harsh(held tilt yaw proxsum proxmin) dzm1 mu03 yaw-35 (held) 0.830 5.1 2.2 0.781 5.0 2.4 0.155 0.003 0.839 0.825 0.832 0.68
+BEST_OF v80f_r3 2026-11-11_15-53-37_v80f_r3/model_25625.pt 0.8524
+== ROUND 4 from 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+HUNG (log idle 10419s) at [1m                         Learning iteration 25592/25750                         [0m 
+TRAIN gl_lifted 0.5902 rot 14.8029 @25592
+BEST_OF v80f_r4 2026-11-11_16-09-42_v80f_r4/model_25575.pt -1
+== ROUND 5 from 2026-11-11_04-57-42_v78d_r9/model_25550.pt
+bash terminated by signal TERM.

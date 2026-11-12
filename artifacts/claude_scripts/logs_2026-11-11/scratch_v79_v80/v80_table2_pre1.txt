@@ -1,0 +1,38 @@
+RES {"dx_cm": 2.0, "dy_cm": -28.0, "lifted": 0.88, "rise_mm": 137.8, "table_N_max": 14.39, "xy_drift_mm": 327.9, "table_N_envmax_mean": 1.82, "table_N_time_mean": 0.05, "table_N_first05s_mean": 1.15}
+RES {"dx_cm": 2.0, "dy_cm": 0.0, "lifted": 0.96, "rise_mm": 152.4, "table_N_max": 16.44, "xy_drift_mm": 216.2, "table_N_envmax_mean": 8.99, "table_N_time_mean": 0.24, "table_N_first05s_mean": 5.72}
+RES {"dx_cm": 2.0, "dy_cm": 28.0, "lifted": 0.96, "rise_mm": 151.6, "table_N_max": 20.0, "xy_drift_mm": 211.0, "table_N_envmax_mean": 4.51, "table_N_time_mean": 0.19, "table_N_first05s_mean": 2.55}
+RES {"dx_cm": -4.0, "dy_cm": -24.0, "lifted": 0.96, "rise_mm": 152.6, "table_N_max": 15.4, "xy_drift_mm": 340.3, "table_N_envmax_mean": 6.35, "table_N_time_mean": 0.26, "table_N_first05s_mean": 4.56}
+RES {"dx_cm": -4.0, "dy_cm": 24.0, "lifted": 0.92, "rise_mm": 145.8, "table_N_max": 14.19, "xy_drift_mm": 264.4, "table_N_envmax_mean": 7.53, "table_N_time_mean": 0.34, "table_N_first05s_mean": 5.08}
+RES {"dx_cm": -8.0, "dy_cm": -18.0, "lifted": 0.96, "rise_mm": 153.3, "table_N_max": 15.42, "xy_drift_mm": 224.9, "table_N_envmax_mean": 8.77, "table_N_time_mean": 0.28, "table_N_first05s_mean": 6.44}
+RES {"dx_cm": -8.0, "dy_cm": 0.0, "lifted": 1.0, "rise_mm": 159.6, "table_N_max": 14.7, "xy_drift_mm": 181.8, "table_N_envmax_mean": 8.05, "table_N_time_mean": 0.21, "table_N_first05s_mean": 5.01}
+RES {"dx_cm": -8.0, "dy_cm": 18.0, "lifted": 1.0, "rise_mm": 158.6, "table_N_max": 14.43, "xy_drift_mm": 200.4, "table_N_envmax_mean": 6.33, "table_N_time_mean": 0.17, "table_N_first05s_mean": 3.55}
+RES {"dx_cm": -12.0, "dy_cm": -14.0, "lifted": 0.96, "rise_mm": 153.2, "table_N_max": 18.48, "xy_drift_mm": 192.3, "table_N_envmax_mean": 11.67, "table_N_time_mean": 0.67, "table_N_first05s_mean": 9.29}
+RES {"dx_cm": -12.0, "dy_cm": 12.0, "lifted": 0.96, "rise_mm": 153.7, "table_N_max": 15.33, "xy_drift_mm": 130.3, "table_N_envmax_mean": 9.78, "table_N_time_mean": 0.32, "table_N_first05s_mean": 6.27}
+RES {"dx_cm": -14.0, "dy_cm": -8.0, "lifted": 0.96, "rise_mm": 153.3, "table_N_max": 16.41, "xy_drift_mm": 156.9, "table_N_envmax_mean": 11.33, "table_N_time_mean": 0.41, "table_N_first05s_mean": 8.34}
+RES {"dx_cm": -14.0, "dy_cm": 6.0, "lifted": 1.0, "rise_mm": 159.4, "table_N_max": 15.04, "xy_drift_mm": 176.9, "table_N_envmax_mean": 7.28, "table_N_time_mean": 0.22, "table_N_first05s_mean": 4.65}
+ROT cube_world_max_during_lift_deg 7.9 hand_max_during_lift_deg 4.6 cube_world_max_during_return_deg 40.5 cube_in_hand_max_deg 4.2 (lifted envs, mean)
+SPLIT on_table(before 1cm): tilt 4.5 yaw 2.9 | lifting: tilt 6.0 yaw 2.6 (deg, max, lifted envs mean)
+SQUARE start |psi0| mean 22.8 | at lift-off: n 288 mean|.| 21.6 p90 40.6  <=5deg 0.12 <=10deg 0.27 | at lift_done: n 272 mean|.| 20.8 p90 40.6  <=5deg 0.16 <=10deg 0.32
+FRONT cube turn against the robot base axes at lift_done (folded +/-45): n 272 mean|.| 4.4 p90 8.9  <=5deg 0.66 <=10deg 0.94 | mean signed -1.7 | front - in-hand: mean -2.7 sd 26.2
+FRONT_BIN |psi0|  0-15: n 89 mean|.| 5.5 p90 9.1  <=5deg 0.55 <=10deg 0.92
+FRONT_BIN |psi0| 15-30: n 90 mean|.| 4.6 p90 9.6  <=5deg 0.66 <=10deg 0.91
+FRONT_BIN |psi0| 30-45: n 93 mean|.| 3.2 p90 6.9  <=5deg 0.77 <=10deg 0.99
+SQUARE_BIN |psi0|  0-15 deg: start mean 7.7 | lift-off n 92 mean|.| 6.6 p90 12.1  <=5deg 0.36 <=10deg 0.79 | lift_done n 89 mean|.| 5.9 p90 10.8  <=5deg 0.46 <=10deg 0.89
+SQUARE_BIN |psi0| 15-30 deg: start mean 22.8 | lift-off n 100 mean|.| 21.1 p90 28.9  <=5deg 0.02 <=10deg 0.04 | lift_done n 90 mean|.| 19.5 p90 28.2  <=5deg 0.03 <=10deg 0.09
+SQUARE_BIN |psi0| 30-45 deg: start mean 37.2 | lift-off n 96 mean|.| 36.4 p90 43.6  <=5deg 0.00 <=10deg 0.00 | lift_done n 93 mean|.| 36.2 p90 43.5  <=5deg 0.00 <=10deg 0.00
+DONE lift_done_frac 0.944
+FINGERQ held_end deg (f1_1, f2_1, th_1, f1_2, f2_2, th_2) q [11.7, 10.9, -34.0, 0.0, 0.0, 19.4] | target [11.8, 11.0, -28.4, 0.0, 0.0, 48.2] | first-joint caps [30.0, 30.0, 0.0] | at cap (target within 0.5 deg) [0.06, 0.06, 0.0] | rotation_base -169.6 shoulder_roll 0.0
+HELD done_and_still_lifted_at_end 0.944
+PROX held_end_first_joint_N [0.023, 0.025, 0.364] sum 0.412
+PROX_LIFT mean_first_joint_N_while_lifting [0.013, 0.027, 0.027] sum 0.067
+PROX_DONE first_joint_N_at_lift_done [0.022, 0.026, 0.344] sum 0.391
+PADS_DONE n 272 | mean N [0.02, 0.03, 0.34, 0.88, 0.9, 1.4] | share > 0.1 N [0.03, 0.04, 0.21, 0.94, 0.96, 1.0] | share > 0.3 N [0.02, 0.03, 0.21, 0.92, 0.95, 0.96]
+DIGITS_DONE (f1, f2, thumb) first+distal: mean N [0.91, 0.93, 1.75] | share < 0.1 N (not touching) [0.04, 0.01, 0.0] | all three >= 0.3 N 0.92 | links touching (>0.1 N) mean 3.18 of 6
+F1SPLIT f1_not_touching n 11 | finger q deg (f1_1, f2_1, th_1, f1_2, f2_2, th_2) [28.0, 4.2, -30.8, 0.0, 0.0, 34.8] | targets [28.0, 4.3, -29.5, 0.0, 0.0, 58.8] | f1 first at cap 30 0.91 | |psi0| mean 18.4
+F1SPLIT f1_touching n 261 | finger q deg (f1_1, f2_1, th_1, f1_2, f2_2, th_2) [8.4, 8.6, -30.0, 0.0, 0.0, 16.3] | targets [8.6, 8.8, -28.5, 0.0, 0.0, 47.7] | f1 first at cap 30 0.00 | |psi0| mean 23.1
+INHAND f1_not_touching | start: cube mm [27.5, 19.6, -155.9], f1/f2/thumb base mm [-20.0, -33.3, -68.8] [-20.0, 6.7, -68.8] [30.7, 14.8, -68.4], place on f2->f1 line -0.32 (base gap 40 mm) | lift_done: cube mm [25.1, 30.2, -157.4], place -0.59
+INHAND f1_touching | start: cube mm [26.7, 16.8, -159.2], f1/f2/thumb base mm [-20.0, -33.3, -68.8] [-20.0, 6.7, -68.8] [29.7, 15.4, -68.4], place on f2->f1 line -0.25 (base gap 40 mm) | lift_done: cube mm [32.0, 16.6, -158.8], place -0.25
+F1OFF_BY_CELL share of held envs with finger 1 not touching: (2,-28) 0.05 (2,0) 0.00 (2,28) 0.09 (-4,-24) 0.04 (-4,24) 0.09 (-8,-18) 0.00 (-8,0) 0.04 (-8,18) 0.04 (-12,-14) 0.00 (-12,12) 0.00 (-14,-8) 0.04 (-14,6) 0.08
+F1OFF_BY_PSI0 (signed, deg): [-45,-30) 0.03 [-30,-15) 0.07 [-15,0) 0.05 [0,15) 0.04 [15,30) 0.04 [30,45) 0.02
+ALL lifted 0.958
+DROP n 0 of done 272 | drop_t after done s [] | cells []

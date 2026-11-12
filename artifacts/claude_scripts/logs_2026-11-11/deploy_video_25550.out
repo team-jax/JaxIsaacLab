@@ -1,0 +1,15 @@
+x+2cm,y-28cm lifted 1.0 done 1.0 handover converged 8.65 raise_contact_N 2.658 cube_moved_mm 12.29 table_N 0.0
+x+2cm,y+0cm lifted 1.0 done 1.0 handover converged 8.65 raise_contact_N 4.946 cube_moved_mm 0.0 table_N 11.1
+x+2cm,y+28cm lifted 1.0 done 0.875 handover converged 8.65 raise_contact_N 4.167 cube_moved_mm 8.94 table_N 2.36
+x-6cm,y-20cm lifted 1.0 done 1.0 handover converged 8.65 raise_contact_N 3.972 cube_moved_mm 0.0 table_N 3.7
+x-6cm,y+0cm lifted 1.0 done 1.0 handover converged 8.65 raise_contact_N 6.665 cube_moved_mm 0.0 table_N 7.29
+x-6cm,y+20cm lifted 1.0 done 1.0 handover converged 8.65 raise_contact_N 2.036 cube_moved_mm 0.61 table_N 2.01
+x-14cm,y-8cm lifted 1.0 done 1.0 handover converged 8.67 raise_contact_N 11.621 cube_moved_mm 18.22 table_N 9.44
+x-14cm,y+0cm lifted 1.0 done 1.0 handover converged 8.67 raise_contact_N 10.649 cube_moved_mm 0.0 table_N 8.97
+x-14cm,y+6cm lifted 1.0 done 1.0 handover converged 8.67 raise_contact_N 6.716 cube_moved_mm 10.37 table_N 3.78
+MONTAGE logs/rsl_rl/jax_v2_1006_front_grasp_lift_v16/2026-11-11_04-57-42_v78d_r9/videos/montage_v27_front_model_25550_deploy.mp4 1225 frames
+DEPLOY_MONTAGE_DONE
+CHAIN {"handover_t_s": 8.65, "handover_by": "converged", "q_deg_env0": [-4.68, -0.0, 1.77, 48.5, -5.09, 37.46, 3.96, -170.76], "qdot_deg_s_env0": [0.53, -0.09, 0.78, -0.01, 1.36, -1.18, -5.76, 1.25], "err_to_start_deg_max_all_envs": 25.2, "qdot_deg_s_max_all_envs": 8.32, "fingers_deg_env0": [-0.0, 0.2, -30.0, -0.0, 0.1, 0.0], "raise_keepout_max_mm": 0.0, "raise_hand_contact_max_n": 6.524, "cube_moved_mm": 0.0, "episode_table_force_max_n": 6.09, "lift_done_frac": 1.0, "lift_done_t_after_handover_s": [5.15, 5.13, 5.08, 4.98], "episode_table_force_mean_n": 0.157, "cube_rise_mm_at_end": [158.1, 157.3, 157.0, 160.1], "lifted_4cm_frac": 1.0, "max_joint_step_deg": [[592, 9.87, 0.95, "finger_3_1_to_finger_3_2"], [591, 9.85, 0.95, "finger_3_1_to_finger_3_2"], [597, 9.95, 0.95, "finger_3_1_to_finger_3_2"], [590, 9.83, 0.95, "finger_3_1_to_finger_3_2"], [574, 9.57, 0.95, "finger_3_1_to_finger_3_2"], [575, 9.58, 0.95, "finger_3_1_to_finger_3_2"], [596, 9.93, 0.95, "finger_3_1_to_finger_3_2"], [576, 9.6, 0.95, "finger_3_1_to_finger_3_2"]], "handover_step": 519, "envs_without_reset": 4, "max_dvel_where": {"raise": [0.05, "upper_arm_to_under_arm"], "handover+0.5s": [9.1, "wrist_yaw_to_hand_base"], "close 0-1s": [9.62, "finger_3_1_to_finger_3_2"], "lift 1-7s": [9.8, "finger_3_1_to_finger_3_2"]}, "max_dvel_deg_s_per_step": {"raise": 3.4, "handover+0.5s": 5.2, "close 0-1s": 41.8, "lift 1-7s": 41.8}, "max_joint_step_deg_around_handover": [0.0, 0.0, 0.0, 0.01, 0.04, 0.07, 0.09, 0.15, 0.19, 0.22]}
+VIDEO logs/rsl_rl/jax_v2_1006_front_grasp_lift_v16/2026-11-11_04-57-42_v78d_r9/videos/front_grasp_lift_close_front_model_25550_deploy_model_25550_close
+DEPLOY_CLOSE_DONE
+DEPLOY_VIDEO_DONE
