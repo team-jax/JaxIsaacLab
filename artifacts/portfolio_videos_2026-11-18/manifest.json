@@ -1,0 +1,308 @@
+{
+  "clips": [
+    {
+      "case": 1,
+      "label": "scene_validation",
+      "source": "artifacts/media/video/2026-10-10/2026-10-10_2027_artifacts_none_none_clip_scene-validation-isaac.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case01_scene_validation.mp4",
+      "frames": 96,
+      "fps": 24.0,
+      "bytes": 497154,
+      "kind": "archived"
+    },
+    {
+      "case": 1,
+      "label": "v2_clearance_closer_lower",
+      "source": "artifacts/media/video/2026-10-15/2026-10-15_0107_v2-scripted-clearance-arc-closer-lower-final_none_none_ref_none.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case01_v2_clearance_closer_lower.mp4",
+      "frames": 600,
+      "fps": 60.0,
+      "bytes": 308804,
+      "kind": "archived"
+    },
+    {
+      "case": 2,
+      "label": "early_pick_place",
+      "source": "logs/skrl/one_arm_jax_pick_place_v3/2026-10-10_19-52-25_ppo_torch/videos/evaluation_ppo/rl-video-step-0.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case02_early_pick_place.mp4",
+      "frames": 479,
+      "fps": 60.0,
+      "bytes": 230875,
+      "kind": "archived"
+    },
+    {
+      "case": 3,
+      "label": "fixed_spawn_scripted",
+      "source": "artifacts/media/video/2026-10-10/2026-10-10_2143_artifacts_none_none_clip_fixed-spawn-scripted-2026-10-10-scripted-lift.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case03_fixed_spawn_scripted.mp4",
+      "frames": 118,
+      "fps": 30.0,
+      "bytes": 684279,
+      "kind": "archived"
+    },
+    {
+      "case": 4,
+      "label": "minimal_5k_failure",
+      "source": "artifacts/media/video/2026-10-13/2026-10-13_2316_oaj-stage1-cube5cm-v3-5k_run_none_single_evaluation-seed-12345.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case04_minimal_5k_failure.mp4",
+      "frames": 479,
+      "fps": 60.0,
+      "bytes": 891090,
+      "kind": "archived"
+    },
+    {
+      "case": 4,
+      "label": "nominal_v3_failure",
+      "source": "artifacts/media/video/2026-10-12/2026-10-12_0934_oaj-grasp-nominal-v3_run_none_single_evaluation-grasp-stage1-rsl.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case04_nominal_v3_failure.mp4",
+      "frames": 479,
+      "fps": 60.0,
+      "bytes": 415327,
+      "kind": "archived"
+    },
+    {
+      "case": 5,
+      "label": "new_model4999_eval",
+      "source": "artifacts/portfolio_videos_2026-11-18/new_evaluations/case05/videos/evaluation_seed_12345/rl-video-step-0.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case05_new_model4999_eval_20261118.mp4",
+      "frames": 479,
+      "fps": 60.0,
+      "bytes": 371927,
+      "kind": "new_2026-11-18"
+    },
+    {
+      "case": 6,
+      "label": "arm_down_pregrasp",
+      "source": "artifacts/media/video/2026-10-14/2026-10-14_2204_oaj-pregrasp-down-v1-250_exp3-pose-from-scratch_none_single_evaluation-seed-12345-wide-arm-down.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case06_arm_down_pregrasp.mp4",
+      "frames": 239,
+      "fps": 60.0,
+      "bytes": 181383,
+      "kind": "archived"
+    },
+    {
+      "case": 6,
+      "label": "opposed_near_exp2",
+      "source": "artifacts/media/video/2026-10-19/2026-10-19_0205_v2-pregrasp-pose-v6_opposed-near-fresh-1k_m999_single_evaluation-pregrasp-wide-front-seed-12345-opposed-cycle2.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case06_opposed_near_exp2.mp4",
+      "frames": 1200,
+      "fps": 60.0,
+      "bytes": 394243,
+      "kind": "archived"
+    },
+    {
+      "case": 7,
+      "label": "v13_close",
+      "source": "artifacts/media/video/2026-10-25/2026-10-25_1445_v2-front-grasp-close-v13_v13-close-onset_m1849_close-front_none.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case07_v13_close.mp4",
+      "frames": 720,
+      "fps": 60.0,
+      "bytes": 274015,
+      "kind": "archived"
+    },
+    {
+      "case": 7,
+      "label": "v8_enclosure",
+      "source": "artifacts/media/video/2026-10-21/2026-10-21_0027_v2-smooth-grasp-v8_v8-enclosed-precontact-guide_m3996_single_evaluation-grasp-v8-wide-front-seed-12345-enclosed-guide.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case07_v8_enclosure.mp4",
+      "frames": 1200,
+      "fps": 60.0,
+      "bytes": 555510,
+      "kind": "archived"
+    },
+    {
+      "case": 8,
+      "label": "v9_pad_sensor",
+      "source": "artifacts/media/video/2026-10-22/2026-10-22_1410_v2-pad-sensor-v9_v9-pad-front-forced-lift_m10047_single_evaluation-grasp-v9-front-seed-12345-forced-lift.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case08_v9_pad_sensor.mp4",
+      "frames": 1200,
+      "fps": 60.0,
+      "bytes": 1072560,
+      "kind": "archived"
+    },
+    {
+      "case": 9,
+      "label": "v14_scripted_ik_lift",
+      "source": "artifacts/media/video/2026-10-25/2026-10-25_2136_v2-front-lift-v14_v14-ik-lift_m2098_front_none.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case09_v14_scripted_ik_lift.mp4",
+      "frames": 720,
+      "fps": 60.0,
+      "bytes": 326310,
+      "kind": "archived"
+    },
+    {
+      "case": 9,
+      "label": "v15_rl_lift",
+      "source": "artifacts/media/video/2026-10-26/2026-10-26_0159_v2-front-lift-rl-v15_v15-cube4-deadline_m2849_front_none.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case09_v15_rl_lift.mp4",
+      "frames": 720,
+      "fps": 60.0,
+      "bytes": 326910,
+      "kind": "archived"
+    },
+    {
+      "case": 10,
+      "label": "v18_chain",
+      "source": "artifacts/media/video/2026-10-29/2026-10-29_0327_v2-front-grasp-lift-v16_v16-sm3_m2350_side_chain-smooth-final.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case10_v18_chain.mp4",
+      "frames": 975,
+      "fps": 60.0,
+      "bytes": 390744,
+      "kind": "archived"
+    },
+    {
+      "case": 11,
+      "label": "v19_failed_chain",
+      "source": "artifacts/media/video/2026-10-29/2026-10-29_1649_v2-front-grasp-lift-v16_v16-sm3_m2350_side_chain-v19-400.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case11_v19_failed_chain.mp4",
+      "frames": 1020,
+      "fps": 60.0,
+      "bytes": 395201,
+      "kind": "archived"
+    },
+    {
+      "case": 11,
+      "label": "v22_table",
+      "source": "artifacts/media/video/2026-10-29/2026-10-29_2009_v2-raise-table-v22_v22-table_m100_side_none.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case11_v22_table.mp4",
+      "frames": 598,
+      "fps": 60.0,
+      "bytes": 251213,
+      "kind": "archived"
+    },
+    {
+      "case": 12,
+      "label": "new_tensorboard_animation",
+      "source": "artifacts/portfolio_videos_2026-11-18/new_evaluations/case12/case12_tensorboard_trends_new_20261118.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case12_new_tensorboard_trends_20261118.mp4",
+      "frames": 240,
+      "fps": 24.0,
+      "bytes": 2267051,
+      "kind": "new_2026-11-18"
+    },
+    {
+      "case": 13,
+      "label": "v27j_chain",
+      "source": "artifacts/media/video/2026-11-02/2026-11-02_0449_v2-front-grasp-lift-v16_v27j_m4675_front_chain-x0.02-y0.06.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case13_v27j_chain.mp4",
+      "frames": 939,
+      "fps": 60.0,
+      "bytes": 420031,
+      "kind": "archived"
+    },
+    {
+      "case": 14,
+      "label": "expanded_reach_17650",
+      "source": "artifacts/deploy_2026-11-05/video/chain_17650_c50_yaw45_wide.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case14_expanded_reach_17650.mp4",
+      "frames": 1224,
+      "fps": 60.0,
+      "bytes": 3770941,
+      "kind": "archived"
+    },
+    {
+      "case": 14,
+      "label": "v27b_far_collision_context",
+      "source": "artifacts/media/video/2026-11-02/2026-11-02_0018_v2-front-grasp-lift-v16_v27b_m3075_front_chain-x-0.03-y-0.05.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case14_v27b_far_collision_context.mp4",
+      "frames": 1080,
+      "fps": 60.0,
+      "bytes": 464846,
+      "kind": "archived"
+    },
+    {
+      "case": 15,
+      "label": "v28f_ik_chain",
+      "source": "artifacts/media/video/2026-11-03/2026-11-03_0021_v2-front-grasp-lift-v16_v28f-ik_m7075_montage-front_none.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case15_v28f_ik_chain.mp4",
+      "frames": 939,
+      "fps": 60.0,
+      "bytes": 3095480,
+      "kind": "archived"
+    },
+    {
+      "case": 16,
+      "label": "v28f_return_l",
+      "source": "artifacts/media/video/2026-11-03/2026-11-03_0056_v2-front-grasp-lift-v16_v28f-ik_m7075_montage-front_retl.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case16_v28f_return_l.mp4",
+      "frames": 1179,
+      "fps": 60.0,
+      "bytes": 3463647,
+      "kind": "archived"
+    },
+    {
+      "case": 17,
+      "label": "v38f_recovery",
+      "source": "artifacts/media/video/2026-11-04/2026-11-04_1900_v2-front-grasp-lift-v16_v38f-r1_m7825_front_chain-x-0.08-y0.06-mu04.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case17_v38f_recovery.mp4",
+      "frames": 1179,
+      "fps": 60.0,
+      "bytes": 517052,
+      "kind": "archived"
+    },
+    {
+      "case": 18,
+      "label": "v48i2_contact",
+      "source": "artifacts/media/video/2026-11-05/2026-11-05_1325_v2-front-grasp-lift-v16_v48i2-r1_m12750_front_chain-x-0.08-y0.06-v48i2-final.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case18_v48i2_contact.mp4",
+      "frames": 1224,
+      "fps": 60.0,
+      "bytes": 486694,
+      "kind": "archived"
+    },
+    {
+      "case": 18,
+      "label": "v50_delay",
+      "source": "artifacts/deploy_2026-11-05/video/chain_13075_delay33ms.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case18_v50_delay.mp4",
+      "frames": 1224,
+      "fps": 60.0,
+      "bytes": 3634226,
+      "kind": "archived"
+    },
+    {
+      "case": 19,
+      "label": "new_isaac_baseline_model25550",
+      "source": "artifacts/portfolio_videos_2026-11-18/new_evaluations/case19/videos/front_grasp_lift_team_model_25550_portfolio_20261118/rl-video-step-0.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case19_new_isaac_baseline_model25550_20261118.mp4",
+      "frames": 1005,
+      "fps": 60.0,
+      "bytes": 555311,
+      "kind": "new_2026-11-18"
+    },
+    {
+      "case": 20,
+      "label": "final_25550",
+      "source": "artifacts/deploy_2026-11-05/video/chain_25550_reach.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case20_final_25550.mp4",
+      "frames": 1225,
+      "fps": 60.0,
+      "bytes": 3498742,
+      "kind": "archived"
+    },
+    {
+      "case": 20,
+      "label": "v3_23025",
+      "source": "artifacts/deploy_2026-11-05/video/chain_23025_v3_reach.mp4",
+      "target": "artifacts/portfolio_videos_2026-11-18/case20_v3_23025.mp4",
+      "frames": 1226,
+      "fps": 60.0,
+      "bytes": 3653348,
+      "kind": "archived"
+    }
+  ],
+  "missing_historical": [
+    {
+      "case": 5,
+      "reason": "학습·평가 절차 사례라 직접 대응하는 단일 당시 영상이 없다. 개별 실험 영상은 다른 사례에 연결했다."
+    },
+    {
+      "case": 12,
+      "reason": "PPO value clipping·이어 학습 문제를 화면으로 직접 증명하는 당시 영상은 확인되지 않았다. 학습 로그와 설정을 근거로 한다."
+    },
+    {
+      "case": 19,
+      "reason": "실제 MuJoCo 이식 실행 영상은 확인되지 않았다. 이식 지시서와 설정 차이 문서를 근거로 한다."
+    }
+  ]
+}
